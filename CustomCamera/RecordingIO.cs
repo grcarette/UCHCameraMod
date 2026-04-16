@@ -40,8 +40,9 @@ namespace UCHCameraMod
                     sb.AppendLine($"P={snap.PosX},{snap.PosY}");
                     sb.AppendLine($"S={snap.ScaleX},{snap.ScaleY}");
                     sb.AppendLine($"R={snap.Rotation}");
+                    sb.AppendLine($"F={snap.FlipSpriteX}");
                     sb.AppendLine($"V={snap.Visible}");
-                    sb.AppendLine($"A={snap.AnimationState}|{snap.AnimationTime}");
+                    sb.AppendLine($"A={snap.AnimationState}|{snap.AnimationTime}|{snap.AnimationStateHash}");
                 }
             }
 
@@ -110,15 +111,22 @@ namespace UCHCameraMod
                             case "R":
                                 float.TryParse(val, out snap.Rotation);
                                 break;
+                            case "F":
+                                float.TryParse(val, out snap.FlipSpriteX);
+                                break;
                             case "V":
                                 bool.TryParse(val, out snap.Visible);
                                 break;
                             case "A":
                                 var a = val.Split('|');
-                                if (a.Length == 2)
+                                if (a.Length >= 2)
                                 {
                                     snap.AnimationState = a[0];
                                     float.TryParse(a[1], out snap.AnimationTime);
+                                }
+                                if (a.Length >= 3)
+                                {
+                                    int.TryParse(a[2], out snap.AnimationStateHash);
                                 }
                                 break;
                         }

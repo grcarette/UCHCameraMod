@@ -28,7 +28,9 @@ namespace UCHCameraMod
         public float Rotation;            // z euler angle
         public bool Visible;              // alive and on screen
         public bool Grounded;             // useful for animation state
-        public string AnimationState;     // name of current animator state
+        public string AnimationState;     // clip name for debugging
         public float AnimationTime;       // normalized time within that state
+        public int AnimationStateHash;    // fullPathHash from AnimatorStateInfo
+        public float FlipSpriteX;         // -1 = facing left, 1 = facing right
     }
 }

@@ -101,6 +101,7 @@ namespace UCHCameraMod
                     ScaleX = t.Transform.localScale.x,
                     ScaleY = t.Transform.localScale.y,
                     Rotation = t.Transform.eulerAngles.z,
+                    FlipSpriteX = t.Character.FlipSpriteX,
                     Visible = t.Character.gameObject.activeInHierarchy
                               && t.Sprite != null && t.Sprite.enabled
                 };
@@ -110,8 +111,9 @@ namespace UCHCameraMod
                 {
                     var stateInfo = t.Animator.GetCurrentAnimatorStateInfo(0);
                     snap.AnimationTime = stateInfo.normalizedTime;
+                    snap.AnimationStateHash = stateInfo.fullPathHash;  // full path required for sub-state machines
 
-                    // Use cached clip info only if available
+                    // Keep clip name for debugging only
                     var clips = t.Animator.GetCurrentAnimatorClipInfo(0);
                     if (clips.Length > 0 && clips[0].clip != null)
                         snap.AnimationState = clips[0].clip.name;
