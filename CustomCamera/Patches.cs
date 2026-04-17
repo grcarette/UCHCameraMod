@@ -47,29 +47,67 @@ namespace UCHCameraMod
         }
     }
 
+    // Caches the "should block Character updates" decision once per frame
+    // so the two patches below don't each do a null check + property access
+    internal static class PlaybackState
+    {
+        private static int _lastFrame = -1;
+        private static bool _cachedBlock;
+
+        public static bool ShouldBlock()
+        {
+            if (Time.frameCount != _lastFrame)
+            {
+                _lastFrame = Time.frameCount;
+                var p = GamePlaybackController.Instance;
+                _cachedBlock = p != null && (p.IsPlaying || p.IsPaused);
+            }
+            return _cachedBlock;
+        }
+    }
+
     [HarmonyPatch(typeof(Character), "FixedUpdate")]
     internal static class PatchCharacterFixedUpdate
     {
         [HarmonyPrefix]
-        static bool Prefix()
-        {
-            if (GamePlaybackController.Instance != null
-                && (GamePlaybackController.Instance.IsPlaying || GamePlaybackController.Instance.IsPaused))
-                return false;
-            return true;
-        }
+        static bool Prefix() => !PlaybackState.ShouldBlock();
     }
 
     [HarmonyPatch(typeof(Character), "Update")]
     internal static class PatchCharacterUpdate
     {
         [HarmonyPrefix]
-        static bool Prefix()
+        static bool Prefix() => !PlaybackState.ShouldBlock();
+    }
+
+    [HarmonyPatch(typeof(GameControl), "Start")]
+    internal static class PatchGameControlCachePrefab
+    {
+        static void Postfix(GameControl __instance)
         {
-            if (GamePlaybackController.Instance != null
-                && (GamePlaybackController.Instance.IsPlaying || GamePlaybackController.Instance.IsPaused))
-                return false;
-            return true;
+            if (__instance.CharacterPrefab != null)
+            {
+                Plugin.CachedCharacterPrefab = __instance.CharacterPrefab;
+                Plugin.Logger.LogInfo("[PrefabCache] CharacterPrefab cached from GameControl");
+            }
+            else
+            {
+                Plugin.Logger.LogWarning("[PrefabCache] GameControl.CharacterPrefab was null");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(ScoreLine), "AddScorePointBlock")]
+    internal static class PatchScoreLineTrackPoints
+    {
+        static void Postfix(PointBlock pb)
+        {
+            if (pb.type != PointBlock.pointBlockType.win &&
+                pb.type != PointBlock.pointBlockType.winDead &&
+                pb.type != PointBlock.pointBlockType.soloWin)
+                return;
+
+            GameRecorder.Instance?.OnPlayerScored(pb.playerNumber);
         }
     }
 }

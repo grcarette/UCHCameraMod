@@ -35,6 +35,10 @@ namespace UCHCameraMod
         private Camera _cam;
         private ZoomCamera _zoom;
 
+        // Cached ZoomCamera reflection fields — looked up once, reused every frame
+        private FieldInfo _fiManualZoom, _fiSmoothFollow, _fiLeftBuf, _fiRightBuf,
+                          _fiTopBuf, _fiBottomBuf, _fiManualControls;
+
         private static readonly string PresetFolder = Path.Combine(
             Paths.ConfigPath, "UCHCameraPresets");
 
@@ -111,7 +115,22 @@ namespace UCHCameraMod
             if (_cam == null) Plugin.Logger.LogWarning("Camera component not found.");
             if (_zoom == null) Plugin.Logger.LogWarning("ZoomCamera component not found.");
 
+            CacheZoomFields();
             ReadFromCamera();
+        }
+
+        private void CacheZoomFields()
+        {
+            if (_zoom == null) return;
+            var t = typeof(ZoomCamera);
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+            _fiManualZoom     = t.GetField("manualZoom",        flags);
+            _fiSmoothFollow   = t.GetField("smoothFollowCamOn", flags);
+            _fiLeftBuf        = t.GetField("UnitLeftBuffer",    flags);
+            _fiRightBuf       = t.GetField("UnitRightBuffer",   flags);
+            _fiTopBuf         = t.GetField("UnitTopBuffer",     flags);
+            _fiBottomBuf      = t.GetField("UnitBottomBuffer",  flags);
+            _fiManualControls = t.GetField("manualControls",    flags);
         }
 
         private void ReadFromCamera()
@@ -120,21 +139,13 @@ namespace UCHCameraMod
 
             FOV = _cam.fieldOfView;
 
-            object lb = ReadField(_zoom, "UnitLeftBuffer");
-            object rb = ReadField(_zoom, "UnitRightBuffer");
-            object tb = ReadField(_zoom, "UnitTopBuffer");
-            object bb = ReadField(_zoom, "UnitBottomBuffer");
-            object mz = ReadField(_zoom, "manualZoom");
-            object sf = ReadField(_zoom, "smoothFollowCamOn");
-            object mc = ReadField(_zoom, "manualControls");
-
-            if (lb != null) LeftBuffer = (float)lb;
-            if (rb != null) RightBuffer = (float)rb;
-            if (tb != null) TopBuffer = (float)tb;
-            if (bb != null) BottomBuffer = (float)bb;
-            if (mz != null) ManualZoom = (bool)mz;
-            if (sf != null) SmoothFollow = (bool)sf;
-            if (mc != null) ManualPosition = (bool)mc;
+            if (_fiLeftBuf        != null) LeftBuffer    = (float)_fiLeftBuf.GetValue(_zoom);
+            if (_fiRightBuf       != null) RightBuffer   = (float)_fiRightBuf.GetValue(_zoom);
+            if (_fiTopBuf         != null) TopBuffer      = (float)_fiTopBuf.GetValue(_zoom);
+            if (_fiBottomBuf      != null) BottomBuffer   = (float)_fiBottomBuf.GetValue(_zoom);
+            if (_fiManualZoom     != null) ManualZoom     = (bool)_fiManualZoom.GetValue(_zoom);
+            if (_fiSmoothFollow   != null) SmoothFollow   = (bool)_fiSmoothFollow.GetValue(_zoom);
+            if (_fiManualControls != null) ManualPosition = (bool)_fiManualControls.GetValue(_zoom);
         }
         public void OnMenuOpened()
         {
@@ -149,13 +160,13 @@ namespace UCHCameraMod
                 if (_cam == null || _zoom == null) return;
             }
 
-            SetField(_zoom, "manualZoom", ManualZoom);
-            SetField(_zoom, "smoothFollowCamOn", SmoothFollow);
-            SetField(_zoom, "UnitLeftBuffer", LeftBuffer);
-            SetField(_zoom, "UnitRightBuffer", RightBuffer);
-            SetField(_zoom, "UnitTopBuffer", TopBuffer);
-            SetField(_zoom, "UnitBottomBuffer", BottomBuffer);
-            SetField(_zoom, "manualControls", ManualPosition);
+            _fiManualZoom?.SetValue(_zoom, ManualZoom);
+            _fiSmoothFollow?.SetValue(_zoom, SmoothFollow);
+            _fiLeftBuf?.SetValue(_zoom, LeftBuffer);
+            _fiRightBuf?.SetValue(_zoom, RightBuffer);
+            _fiTopBuf?.SetValue(_zoom, TopBuffer);
+            _fiBottomBuf?.SetValue(_zoom, BottomBuffer);
+            _fiManualControls?.SetValue(_zoom, ManualPosition);
 
             _cam.fieldOfView = FOV;
         }

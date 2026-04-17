@@ -11,8 +11,10 @@ namespace UCHCameraMod
     {
         internal static new ManualLogSource Logger;
         internal static Plugin Instance;
+        internal static Character CachedCharacterPrefab;
 
         // ── Config entries ──────────────────────────────────────────────
+        internal static ConfigEntry<bool> CfgVerboseReplayLog;
         internal static ConfigEntry<bool> CfgManualZoom;
         internal static ConfigEntry<bool> CfgSmoothFollow;
         internal static ConfigEntry<float> CfgLeftBuffer;
@@ -55,6 +57,9 @@ namespace UCHCameraMod
 
         private void BindConfig()
         {
+            CfgVerboseReplayLog = Config.Bind("Debug", "VerboseReplayLog", true,
+                "Enable detailed replay reconstruction logging");
+
             const string SEC = "Camera";
             CfgManualZoom = Config.Bind(SEC, "ManualZoom", false, "Enable manual zoom on ZoomCamera");
             CfgSmoothFollow = Config.Bind(SEC, "SmoothFollow", true, "Enable smooth follow on ZoomCamera");

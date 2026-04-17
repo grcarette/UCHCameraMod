@@ -3,12 +3,12 @@
   "WorkspaceRootPath": "C:\\Users\\grcar\\source\\repos\\CustomCamera\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|C:\\Users\\grcar\\source\\repos\\CustomCamera\\customcamera\\gameplaybackcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|solutionrelative:customcamera\\gameplaybackcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|C:\\Users\\grcar\\source\\repos\\CustomCamera\\customcamera\\cameraprogramrunner.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|solutionrelative:customcamera\\cameraprogramrunner.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|c:\\users\\grcar\\source\\repos\\customcamera\\customcamera\\gameplaybackcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|solutionrelative:customcamera\\gameplaybackcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|C:\\Users\\grcar\\source\\repos\\CustomCamera\\customcamera\\cameraui.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -19,7 +19,7 @@
       "RelativeMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|solutionrelative:customcamera\\recordingdata.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|c:\\users\\grcar\\source\\repos\\customcamera\\customcamera\\patches.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "AbsoluteMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|C:\\Users\\grcar\\source\\repos\\CustomCamera\\customcamera\\patches.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{BACB8B4F-9E01-429F-8586-C73090AC8BBA}|CustomCamera\\CustomCamera.csproj|solutionrelative:customcamera\\patches.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
@@ -49,17 +49,17 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 0,
+          "SelectedChildIndex": 3,
           "Children": [
             {
               "$type": "Document",
-              "DocumentIndex": 0,
+              "DocumentIndex": 1,
               "Title": "GamePlaybackController.cs",
               "DocumentMoniker": "C:\\Users\\grcar\\source\\repos\\CustomCamera\\CustomCamera\\GamePlaybackController.cs",
               "RelativeDocumentMoniker": "CustomCamera\\GamePlaybackController.cs",
               "ToolTip": "C:\\Users\\grcar\\source\\repos\\CustomCamera\\CustomCamera\\GamePlaybackController.cs",
               "RelativeToolTip": "CustomCamera\\GamePlaybackController.cs",
-              "ViewState": "AgIAACYBAAAAAAAAAAAcwEcBAAA9AAAAAAAAAA==",
+              "ViewState": "AgIAAMAAAAAAAAAAAAAtwNAAAAANAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-04-16T01:22:13.16Z",
               "EditorCaption": ""
@@ -74,8 +74,7 @@
               "RelativeToolTip": "CustomCamera\\RecordingData.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-04-16T01:22:06.585Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-04-16T01:22:06.585Z"
             },
             {
               "$type": "Document",
@@ -87,18 +86,17 @@
               "RelativeToolTip": "CustomCamera\\CameraUI.cs",
               "ViewState": "AgIAAF8BAAAAAAAAAAAYwH4BAABFAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-04-15T23:06:28.633Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-04-15T23:06:28.633Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 0,
               "Title": "CameraProgramRunner.cs",
               "DocumentMoniker": "C:\\Users\\grcar\\source\\repos\\CustomCamera\\CustomCamera\\CameraProgramRunner.cs",
               "RelativeDocumentMoniker": "CustomCamera\\CameraProgramRunner.cs",
               "ToolTip": "C:\\Users\\grcar\\source\\repos\\CustomCamera\\CustomCamera\\CameraProgramRunner.cs",
               "RelativeToolTip": "CustomCamera\\CameraProgramRunner.cs",
-              "ViewState": "AgIAAAsAAAAAAAAAAAA0wBYAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAEsAAAAAAAAAAAAlwGUAAAA3AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-03-15T23:33:10.949Z",
               "EditorCaption": ""
@@ -161,8 +159,7 @@
               "RelativeToolTip": "CustomCamera\\Patches.cs",
               "ViewState": "AgIAAA4AAAAAAAAAAAAQwCcAAAA0AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-03-15T21:53:18.033Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-03-15T21:53:18.033Z"
             },
             {
               "$type": "Document",

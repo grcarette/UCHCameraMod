@@ -90,7 +90,7 @@ namespace UCHCameraMod
             if (CurrentKeyframeIndex >= _program.Keyframes.Count - 1)
             {
                 ApplyKeyframe(_program.Keyframes[_program.Keyframes.Count - 1]);
-                IsPlaying = false;
+                Stop();
                 return;
             }
 
