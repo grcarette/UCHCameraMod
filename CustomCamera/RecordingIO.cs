@@ -73,6 +73,17 @@ namespace UCHCameraMod
                 sb.AppendLine($"Snapshot={b64}");
             }
 
+            sb.AppendLine($"SoundCount={rec.SoundEvents.Count}");
+            foreach (var snd in rec.SoundEvents)
+            {
+                sb.AppendLine("---SND");
+                sb.AppendLine($"ST={snd.Time}");
+                sb.AppendLine($"SN={snd.NetworkNumber}");
+                sb.AppendLine($"SE={snd.EventName}");
+                sb.AppendLine($"SZ={snd.IsZombie}");
+                sb.AppendLine($"SG={snd.IsGhost}");
+            }
+
             foreach (var frame in rec.Frames)
             {
                 sb.AppendLine("---FRAME");
@@ -117,6 +128,12 @@ namespace UCHCameraMod
 
                 if (line == "---PIECE")
                     continue;
+
+                if (line == "---SND")
+                {
+                    rec.SoundEvents.Add(new SoundEvent());
+                    continue;
+                }
 
                 var parts = line.Split(new[] { '=' }, 2);
                 if (parts.Length != 2) continue;
@@ -186,11 +203,58 @@ namespace UCHCameraMod
                             }
                             catch
                             {
-                                Plugin.Logger.LogError("[RecordingIO] Failed to decode snapshot base64");
+                                Plugin.Logger.LogError("[RecordingIO] Failed to decode snapshot base64 data");
                                 rec.SnapshotBytes = null;
                             }
                             break;
                         case "SnapshotSize":
+                            break;
+                        case "SoundCount":
+                            break;
+                        case "ST":
+                            if (rec.SoundEvents.Count > 0)
+                            {
+                                int si = rec.SoundEvents.Count - 1;
+                                var snd = rec.SoundEvents[si];
+                                float.TryParse(val, out snd.Time);
+                                rec.SoundEvents[si] = snd;
+                            }
+                            break;
+                        case "SN":
+                            if (rec.SoundEvents.Count > 0)
+                            {
+                                int si = rec.SoundEvents.Count - 1;
+                                var snd = rec.SoundEvents[si];
+                                int.TryParse(val, out snd.NetworkNumber);
+                                rec.SoundEvents[si] = snd;
+                            }
+                            break;
+                        case "SE":
+                            if (rec.SoundEvents.Count > 0)
+                            {
+                                int si = rec.SoundEvents.Count - 1;
+                                var snd = rec.SoundEvents[si];
+                                snd.EventName = val;
+                                rec.SoundEvents[si] = snd;
+                            }
+                            break;
+                        case "SZ":
+                            if (rec.SoundEvents.Count > 0)
+                            {
+                                int si = rec.SoundEvents.Count - 1;
+                                var snd = rec.SoundEvents[si];
+                                bool.TryParse(val, out snd.IsZombie);
+                                rec.SoundEvents[si] = snd;
+                            }
+                            break;
+                        case "SG":
+                            if (rec.SoundEvents.Count > 0)
+                            {
+                                int si = rec.SoundEvents.Count - 1;
+                                var snd = rec.SoundEvents[si];
+                                bool.TryParse(val, out snd.IsGhost);
+                                rec.SoundEvents[si] = snd;
+                            }
                             break;
                         case "PID":
                             var ps = new PlaceableSnapshot();
@@ -277,7 +341,8 @@ namespace UCHCameraMod
                     }
                     else if (currentFrame.Characters.Count > 0)
                     {
-                        var snap = currentFrame.Characters[currentFrame.Characters.Count - 1];
+                        int last = currentFrame.Characters.Count - 1;
+                        var snap = currentFrame.Characters[last];
                         switch (key)
                         {
                             case "P":
@@ -310,15 +375,17 @@ namespace UCHCameraMod
                                 }
                                 break;
                         }
+                        currentFrame.Characters[last] = snap;
                     }
                 }
             }
 
-            Plugin.Logger.LogInfo($"[RecordingIO] Loaded recording: " +
-                                  $"Name={rec.Name} Duration={rec.Duration:F1}s " +
+            Plugin.Logger.LogInfo($"[RecordingIO] Loaded: Name={rec.Name} " +
                                   $"Frames={rec.Frames.Count} " +
                                   $"Players={rec.Metadata?.Players.Count ?? 0} " +
-                                  $"ScenePieces={rec.Scene?.Placeables.Count ?? 0}");
+                                  $"SceneName={rec.Metadata?.SceneName ?? "none"} " +
+                                  $"HasSnapshot={rec.SnapshotBytes != null} " +
+                                  $"SnapshotBytes={rec.SnapshotBytes?.Length ?? 0}");
 
             if (Plugin.CfgVerboseReplayLog.Value)
             {

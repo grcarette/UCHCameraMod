@@ -70,7 +70,8 @@ namespace UCHCameraMod
             CurrentRecording = new Recording
             {
                 Name = "Recording_" + System.DateTime.Now.ToString("HHmmss"),
-                TickRate = Time.fixedDeltaTime
+                TickRate = Time.fixedDeltaTime,
+                Frames = new List<RecordingFrame>(3000)
             };
 
             var meta = CurrentRecording.Metadata;
@@ -122,16 +123,22 @@ namespace UCHCameraMod
                 if (gc != null)
                 {
                     var qs = gc.GetComponent<QuickSaver>();
+                    Plugin.Logger.LogInfo($"[Recorder] QuickSaver found: {qs != null}");
                     if (qs != null)
                     {
+                        Plugin.Logger.LogInfo("[Recorder] Capturing snapshot...");
                         var xmlDoc = qs.GetCurrentXmlSnapshot(true);
                         CurrentRecording.SnapshotBytes = QuickSaver.GetCompressedBytesFromXmlDoc(xmlDoc);
-                        Plugin.Logger.LogInfo($"[Recorder] Snapshot captured: {CurrentRecording.SnapshotBytes.Length} bytes (compressed)");
+                        Plugin.Logger.LogInfo($"[Recorder] Snapshot captured: {CurrentRecording.SnapshotBytes.Length} bytes compressed");
                     }
                     else
                     {
-                        Plugin.Logger.LogWarning("[Recorder] No QuickSaver component on GameControl");
+                        Plugin.Logger.LogWarning("[Recorder] No QuickSaver on GameControl — snapshot not captured");
                     }
+                }
+                else
+                {
+                    Plugin.Logger.LogWarning("[Recorder] No GameControl — snapshot not captured");
                 }
             }
             catch (System.Exception ex)
@@ -141,6 +148,20 @@ namespace UCHCameraMod
 
             _startTime = Time.realtimeSinceStartup;
             IsRecording = true;
+        }
+
+        public void RecordSoundEvent(int networkNumber, string eventName, bool isZombie, bool isGhost)
+        {
+            if (!IsRecording || CurrentRecording == null) return;
+
+            CurrentRecording.SoundEvents.Add(new SoundEvent
+            {
+                Time = Time.realtimeSinceStartup - _startTime,
+                NetworkNumber = networkNumber,
+                EventName = eventName,
+                IsZombie = isZombie,
+                IsGhost = isGhost
+            });
         }
 
         public void OnPlayerScored(int networkNumber)
@@ -278,7 +299,12 @@ namespace UCHCameraMod
 
         private void CaptureFrame(float elapsed)
         {
-            var frame = new RecordingFrame { Time = elapsed };
+            int count = _tracked.Count;
+            var frame = new RecordingFrame
+            {
+                Time = elapsed,
+                Characters = new List<CharacterSnapshot>(count)
+            };
 
             for (int i = 0; i < _tracked.Count; i++)
             {

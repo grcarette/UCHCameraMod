@@ -61,6 +61,7 @@ namespace UCHCameraMod
         public SceneSnapshot Scene = new SceneSnapshot();
         public byte[] SnapshotBytes;      // compressed QuickSaver XML snapshot
         public List<RecordingFrame> Frames = new List<RecordingFrame>();
+        public List<SoundEvent> SoundEvents = new List<SoundEvent>();
     }
 
     [Serializable]
@@ -71,17 +72,26 @@ namespace UCHCameraMod
     }
 
     [Serializable]
-    public class CharacterSnapshot
+    public struct SoundEvent
     {
-        public int NetworkNumber;         // identifies which player
-        public float PosX, PosY;          // transform position
-        public float ScaleX, ScaleY;      // for detecting flipped sprites
-        public float Rotation;            // z euler angle
-        public bool Visible;              // alive and on screen
-        public bool Grounded;             // useful for animation state
-        public string AnimationState;     // clip name for debugging
-        public float AnimationTime;       // normalized time within that state
-        public int AnimationStateHash;    // fullPathHash from AnimatorStateInfo
-        public float FlipSpriteX;         // -1 = facing left, 1 = facing right
+        public float Time;
+        public int NetworkNumber;
+        public string EventName;
+        public bool IsZombie;
+        public bool IsGhost;
+    }
+
+    [Serializable]
+    public struct CharacterSnapshot
+    {
+        public int NetworkNumber;
+        public float PosX, PosY;
+        public float ScaleX, ScaleY;
+        public float Rotation;
+        public bool Visible;
+        public string AnimationState;
+        public float AnimationTime;
+        public int AnimationStateHash;
+        public float FlipSpriteX;
     }
 }

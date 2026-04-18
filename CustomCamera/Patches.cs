@@ -1,5 +1,6 @@
 using HarmonyLib;
 using UnityEngine;
+using System;
 
 namespace UCHCameraMod
 {
@@ -13,8 +14,19 @@ namespace UCHCameraMod
     [HarmonyPatch(typeof(ZoomCamera), "Update")]
     internal static class PatchZoomCameraUpdate
     {
-        static bool Prefix()
+        public static bool Prefix(Character __instance)
         {
+            // Guard against destroyed characters during scene transitions
+            if (__instance == null) return true;
+
+            try
+            {
+                if (!__instance.hasAuthority) return true;
+            }
+            catch
+            {
+                return true;
+            }
             bool modActive = CameraModController.Instance != null
                           && CameraModController.Instance.ModActive;
             bool camProgram = CameraProgramRunner.Instance != null
@@ -36,12 +48,18 @@ namespace UCHCameraMod
     {
         static bool Prefix(Character __instance)
         {
-            // Block game input for the local player while camera mode is on
-            if (CameraModController.Instance != null
-                && CameraModController.Instance.ModActive
-                && __instance.hasAuthority)
+            try
             {
-                return false; // skip the original — game receives no input
+                if (CameraModController.Instance != null
+                    && CameraModController.Instance.ModActive
+                    && __instance.hasAuthority)
+                {
+                    return false;
+                }
+            }
+            catch
+            {
+                return true;
             }
             return true;
         }
@@ -94,6 +112,73 @@ namespace UCHCameraMod
             {
                 Plugin.Logger.LogWarning("[PrefabCache] GameControl.CharacterPrefab was null");
             }
+        }
+    }
+
+    [HarmonyPatch(typeof(GameControl))]
+    [HarmonyPatch("SetupStart")]
+    [HarmonyPatch(new Type[] { typeof(GameState.GameMode) })]
+    internal static class PatchGameControlSetupStart
+    {
+        static void Postfix(GameControl __instance)
+        {
+            Plugin.Logger.LogInfo("[ReplayLaunch:Patch] GameControl.SetupStart postfix fired");
+            Plugin.Logger.LogInfo($"[ReplayLaunch:Patch] Phase={__instance.Phase} " +
+                                  $"Scene={__instance.AssociatedScene} " +
+                                  $"hasAuthority={__instance.hasAuthority}");
+
+            if (GamePlaybackController.Instance != null &&
+                GamePlaybackController.Instance.HasPendingReplay)
+            {
+                Plugin.Logger.LogInfo("[ReplayLaunch:Patch] Pending replay detected — " +
+                                      "starting OnGameReadyForReplay coroutine");
+                __instance.StartCoroutine(
+                    GamePlaybackController.Instance.OnGameReadyForReplay(__instance));
+            }
+
+            // Cache the character prefab for later use
+            if (__instance.CharacterPrefab != null)
+            {
+                Plugin.CachedCharacterPrefab = __instance.CharacterPrefab;
+                if (Plugin.CfgVerboseReplayLog.Value)
+                    Plugin.Logger.LogInfo("[PrefabCache] CharacterPrefab cached from GameControl");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Character), "audioEvent")]
+    internal static class PatchCharacterAudioEvent
+    {
+        static void Postfix(Character __instance, string audioEventName, GameObject go, bool ignoreGhostZombie)
+        {
+            if (PlaybackState.ShouldBlock()) return;
+
+            var recorder = GameRecorder.Instance;
+            if (recorder == null || !recorder.IsRecording) return;
+
+            int netNum = __instance.networkNumber;
+            if (netNum <= 0) return;
+
+            recorder.RecordSoundEvent(netNum, audioEventName,
+                __instance.isZombie && !ignoreGhostZombie,
+                __instance.isGhost && !ignoreGhostZombie);
+        }
+    }
+
+    [HarmonyPatch(typeof(Character), "AudioEventExact")]
+    internal static class PatchCharacterAudioEventExact
+    {
+        static void Postfix(Character __instance, string audioEventName)
+        {
+            if (PlaybackState.ShouldBlock()) return;
+
+            var recorder = GameRecorder.Instance;
+            if (recorder == null || !recorder.IsRecording) return;
+
+            int netNum = __instance.networkNumber;
+            if (netNum <= 0) return;
+
+            recorder.RecordSoundEvent(netNum, "EXACT:" + audioEventName, false, false);
         }
     }
 

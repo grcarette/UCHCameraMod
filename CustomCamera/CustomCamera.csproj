@@ -34,6 +34,10 @@
     <Reference Include="0Harmony">
       <HintPath>..\..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Ultimate Chicken Horse\BepInEx\core\0Harmony.dll</HintPath>
     </Reference>
+    <Reference Include="AK.Wwise.Unity.API, Version=0.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Ultimate Chicken Horse\UltimateChickenHorse_Data\Managed\AK.Wwise.Unity.API.dll</HintPath>
+    </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>..\..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Ultimate Chicken Horse\UltimateChickenHorse_Data\Managed\Assembly-CSharp.dll</HintPath>
     </Reference>
