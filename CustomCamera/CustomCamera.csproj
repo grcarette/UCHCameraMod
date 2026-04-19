@@ -90,6 +90,7 @@
     <Compile Include="CameraProgram.cs" />
     <Compile Include="CameraProgramRunner.cs" />
     <Compile Include="CameraUI.cs" />
+    <Compile Include="DummyController.cs" />
     <Compile Include="GamePlaybackController.cs" />
     <Compile Include="GameRecorder.cs" />
     <Compile Include="MyPluginInfo.cs" />

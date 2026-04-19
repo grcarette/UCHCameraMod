@@ -36,6 +36,10 @@ namespace UCHCameraMod
         private Character.Animals _originalAnimal;
         private int[] _originalOutfits;
 
+        private List<Player> _fakePlayers = new List<Player>();
+        private List<GameObject> _dummyControllerObjects = new List<GameObject>();
+        private Dictionary<int, int> _lobbyNumToRecordedNum = new Dictionary<int, int>();
+
         private void Awake()
         {
             Instance = this;
@@ -107,21 +111,23 @@ namespace UCHCameraMod
             var lsc = LevelSelectController.lastInstance;
             if (lsc == null) return;
 
+            if (recording.Metadata.Players.Count == 0)
+            {
+                Plugin.Logger.LogError("[ReplayLaunch] Recording has no players");
+                return;
+            }
+
             _pendingReplayRecording = recording;
             _replayLocalNetworkNumber = recording.Metadata.Players[0].NetworkNumber;
+            _lobbyNumToRecordedNum.Clear();
 
-            // Deactivate mod UI so ZoomCamera works normally
             if (CameraModController.Instance != null && CameraModController.Instance.ModActive)
             {
                 CameraModController.Instance.ModActive = false;
                 Plugin.Logger.LogInfo("[ReplayLaunch] Deactivated camera mod for replay");
             }
 
-            // Configure character appearance in the treehouse
-            ConfigureLocalPlayerForReplay(recording);
-
             var levelName = LevelSelectController.GetLevelNameEnumFromSceneName(sceneName);
-
             CustomLevelPortal portal = lsc.snapshotPortals[0];
             portal.TargetLevel = levelName;
             portal.Networkpopulated = true;
@@ -141,28 +147,119 @@ namespace UCHCameraMod
                 portal.snapshotXml = null;
             }
 
+            StartCoroutine(ConfigureAndLaunchReplay(recording, portal, lsc));
+        }
+
+        private IEnumerator ConfigureAndLaunchReplay(
+            Recording recording,
+            CustomLevelPortal portal,
+            LevelSelectController lsc)
+        {
+            var players = recording.Metadata.Players;
+
+            LobbyPlayer realLocalLobby = null;
+            foreach (var slot in LobbyManager.instance.lobbySlots)
+            {
+                var lp = slot as LobbyPlayer;
+                if (lp != null && lp.IsLocalPlayer) { realLocalLobby = lp; break; }
+            }
+
+            if (realLocalLobby == null)
+            {
+                Plugin.Logger.LogError("[ReplayLaunch:Config] No real local LobbyPlayer found");
+                yield break;
+            }
+
+            _originalAnimal = realLocalLobby.PickedAnimal;
+            _originalOutfits = new int[realLocalLobby.characterOutfitsList.Count];
+            for (int i = 0; i < realLocalLobby.characterOutfitsList.Count; i++)
+                _originalOutfits[i] = realLocalLobby.characterOutfitsList[i];
+
+            ConfigureLobbyPlayerAsReplay(realLocalLobby, players[0]);
+
+            yield return null;
+
+            for (int i = 1; i < players.Count; i++)
+            {
+                yield return SpawnAndConfigureFakePlayer(players[i]);
+            }
+
+            yield return null;
+
             GameSettings.GetInstance().GameMode = GameState.GameMode.FREEPLAY;
             lsc.LaunchLevel(portal);
         }
 
-        private void ConfigureLocalPlayerForReplay(Recording recording)
+        private IEnumerator SpawnAndConfigureFakePlayer(PlayerInfo info)
         {
-            Plugin.Logger.LogInfo("[ReplayLaunch:Config] Configuring local player...");
+            var go = new GameObject($"ReplayDummyController_P{info.NetworkNumber}");
+            UnityEngine.Object.DontDestroyOnLoad(go);
+            var dummy = go.AddComponent<DummyController>();
+            _dummyControllerObjects.Add(go);
 
-            LobbyPlayer localLobby = null;
-            foreach (var lp in LobbyManager.instance.lobbySlots)
+            var fakePlayer = PlayerManager.GetInstance().AddPlayer(dummy);
+            if (fakePlayer == null)
             {
-                if (lp != null && ((LobbyPlayer)lp).IsLocalPlayer)
-                {
-                    localLobby = (LobbyPlayer)lp;
+                Plugin.Logger.LogError(
+                    $"[ReplayLaunch:Fake] Failed to add fake Player for {info.Animal} " +
+                    $"(PlayerManager full? max is {PlayerManager.maxPlayers})");
+                UnityEngine.Object.Destroy(go);
+                yield break;
+            }
+            _fakePlayers.Add(fakePlayer);
+
+            float timeout = 5f;
+            while (timeout > 0f)
+            {
+                if (fakePlayer.AssociatedLobbyPlayer != null
+                    && fakePlayer.AssociatedLobbyPlayer.Initialized)
                     break;
-                }
+                timeout -= Time.unscaledDeltaTime;
+                yield return null;
             }
 
-            if (localLobby == null)
+            if (fakePlayer.AssociatedLobbyPlayer == null
+                || !fakePlayer.AssociatedLobbyPlayer.Initialized)
             {
-                Plugin.Logger.LogError("[ReplayLaunch:Config] No local LobbyPlayer found");
+                Plugin.Logger.LogError(
+                    $"[ReplayLaunch:Fake] Timed out waiting for LobbyPlayer init " +
+                    $"for recorded P{info.NetworkNumber}");
+                yield break;
+            }
+
+            ConfigureLobbyPlayerAsReplay(fakePlayer.AssociatedLobbyPlayer, info);
+            Plugin.Logger.LogInfo(
+                $"[ReplayLaunch:Fake] Configured fake LobbyPlayer netNum=" +
+                $"{fakePlayer.AssociatedLobbyPlayer.networkNumber} as {info.Animal} " +
+                $"(recorded P{info.NetworkNumber})");
+        }
+
+        private void ConfigureLobbyPlayerAsReplay(LobbyPlayer lp, PlayerInfo info)
+        {
+            Character.Animals targetAnimal = Character.Animals.CHICKEN;
+            if (!string.IsNullOrEmpty(info.Animal))
+                System.Enum.TryParse(info.Animal, out targetAnimal);
+
+            _lobbyNumToRecordedNum[lp.networkNumber] = info.NetworkNumber;
+
+            if (lp.PickedAnimal == targetAnimal && lp.CharacterInstance != null)
+            {
+                if (info.Outfits != null && info.Outfits.Length > 0)
+                    lp.CallCmdSetOutfitsFromArray(info.Outfits);
+                Plugin.Logger.LogInfo(
+                    $"[ReplayLaunch:Config] P{lp.networkNumber} already {targetAnimal}, refreshed outfits");
                 return;
+            }
+
+            if (lp.CharacterInstance != null)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[ReplayLaunch:Config] P{lp.networkNumber} removing current character {lp.PickedAnimal}");
+                lp.CallCmdRemoveCharacter();
+                if (lp.LocalPlayer != null && lp.LocalPlayer.UseController != null)
+                    lp.LocalPlayer.UseController.AssociateCharacter(Character.Animals.NONE, lp.localNumber);
+                if (lp.LocalPlayer != null)
+                    lp.LocalPlayer.PlayerCharacter = null;
             }
 
             var lsc = LevelSelectController.lastInstance;
@@ -172,44 +269,6 @@ namespace UCHCameraMod
                 return;
             }
 
-            // Save originals for restore
-            _originalAnimal = localLobby.PickedAnimal;
-            _originalOutfits = new int[localLobby.characterOutfitsList.Count];
-            for (int i = 0; i < localLobby.characterOutfitsList.Count; i++)
-                _originalOutfits[i] = localLobby.characterOutfitsList[i];
-
-            var firstPlayer = recording.Metadata.Players[0];
-            Character.Animals targetAnimal = Character.Animals.CHICKEN;
-            if (!string.IsNullOrEmpty(firstPlayer.Animal))
-                System.Enum.TryParse(firstPlayer.Animal, out targetAnimal);
-
-            _replayLocalNetworkNumber = firstPlayer.NetworkNumber;
-
-            // If already correct, just set outfits
-            if (localLobby.PickedAnimal == targetAnimal && localLobby.CharacterInstance != null)
-            {
-                if (firstPlayer.Outfits != null && firstPlayer.Outfits.Length > 0)
-                    localLobby.CallCmdSetOutfitsFromArray(firstPlayer.Outfits);
-                return;
-            }
-
-            // Remove current character cleanly (no UI effects)
-            if (localLobby.CharacterInstance != null)
-            {
-                Plugin.Logger.LogInfo($"[ReplayLaunch:Config] Removing current character {localLobby.PickedAnimal}");
-                localLobby.CallCmdRemoveCharacter();
-            }
-
-            // Remove current character cleanly
-            if (localLobby.CharacterInstance != null)
-            {
-                Plugin.Logger.LogInfo($"[ReplayLaunch:Config] Removing current character {localLobby.PickedAnimal}");
-                localLobby.CallCmdRemoveCharacter();
-                localLobby.LocalPlayer.UseController.AssociateCharacter(Character.Animals.NONE, localLobby.localNumber);
-                localLobby.LocalPlayer.PlayerCharacter = null;
-            }
-
-            // Find the target character in the treehouse
             Character targetChar = null;
             foreach (var startPoint in lsc.StartingPoints)
             {
@@ -223,27 +282,24 @@ namespace UCHCameraMod
 
             if (targetChar == null)
             {
-                Plugin.Logger.LogError($"[ReplayLaunch:Config] Could not find unpicked {targetAnimal}");
+                Plugin.Logger.LogError(
+                    $"[ReplayLaunch:Config] No unpicked {targetAnimal} available for P{lp.networkNumber}");
                 return;
             }
 
-            // Set outfits before assign (RpcAssignCharacter reads them)
-            if (firstPlayer.Outfits != null && firstPlayer.Outfits.Length > 0)
-                localLobby.CallCmdSetOutfitsFromArray(firstPlayer.Outfits);
+            if (info.Outfits != null && info.Outfits.Length > 0)
+                lp.CallCmdSetOutfitsFromArray(info.Outfits);
 
-            // Assign character using the game's own command
-            localLobby.CallCmdAssignCharacter(
-                    targetChar.netId.Value,
-                    localLobby.networkNumber,
-                    localLobby.localNumber,
-                    true);
+            lp.CallCmdAssignCharacter(targetChar.netId.Value, lp.networkNumber, lp.localNumber, true);
 
-            localLobby.LocalPlayer.PlayerCharacter = targetChar;
-            localLobby.PlayerStatus = LobbyPlayer.Status.CHARACTER;
-            localLobby.NetworkPickedAnimal = targetAnimal;
-            localLobby.LocalPlayer.UseController.AssociateCharacter(targetAnimal, localLobby.localNumber);
+            if (lp.LocalPlayer != null)
+                lp.LocalPlayer.PlayerCharacter = targetChar;
+            lp.PlayerStatus = LobbyPlayer.Status.CHARACTER;
+            lp.NetworkPickedAnimal = targetAnimal;
+            if (lp.LocalPlayer != null && lp.LocalPlayer.UseController != null)
+                lp.LocalPlayer.UseController.AssociateCharacter(targetAnimal, lp.localNumber);
 
-            Plugin.Logger.LogInfo($"[ReplayLaunch:Config] Picked {targetAnimal}");
+            Plugin.Logger.LogInfo($"[ReplayLaunch:Config] P{lp.networkNumber} picked {targetAnimal}");
         }
 
         public IEnumerator OnGameReadyForReplay(GameControl gc)
@@ -276,41 +332,50 @@ namespace UCHCameraMod
             // Wait for resetPlayerCharacter to finish
             yield return new WaitForSeconds(0.5f);
 
-            // Map the local character
+            // Diagnostic: log what the game spawned
+            Plugin.Logger.LogInfo($"[Diag] Queue has {gc.CurrentPlayerQueue.Count} entries");
+            foreach (var gp in gc.CurrentPlayerQueue)
+            {
+                var ch = gp.CharacterInstance;
+                Plugin.Logger.LogInfo(
+                    $"[Diag] Queue: netNum={gp.networkNumber} " +
+                    $"hasAuthority={ch?.hasAuthority} sprite={ch?.CharacterSprite} " +
+                    $"sfx={ch?.CharacterSFXName} name={ch?.gameObject.name}");
+            }
+
             _characterMap.Clear();
             _rbMap.Clear();
             _animMap.Clear();
 
+            // Map game-spawned characters using lobby→recorded number table
             foreach (GamePlayer gp in gc.CurrentPlayerQueue)
             {
-                if (gp.CharacterInstance != null)
+                if (gp.CharacterInstance == null) continue;
+                if (!_lobbyNumToRecordedNum.TryGetValue(gp.networkNumber, out int recordedNetNum))
                 {
-                    MapCharacterInternal(_replayLocalNetworkNumber, gp.CharacterInstance);
-                    Plugin.Logger.LogInfo($"[ReplayLaunch:Ready] Mapped local character to P{_replayLocalNetworkNumber}");
+                    Plugin.Logger.LogWarning(
+                        $"[ReplayLaunch:Ready] GP netNum={gp.networkNumber} not in lobby->recorded map, skipping");
+                    continue;
                 }
+                MapCharacterInternal(recordedNetNum, gp.CharacterInstance);
+                Plugin.Logger.LogInfo(
+                    $"[ReplayLaunch:Ready] Mapped GP netNum={gp.networkNumber} " +
+                    $"(animal={gp.CharacterInstance.CharacterSprite}) to recorded P{recordedNetNum}");
             }
 
-            // Spawn extra characters for multiplayer recordings
-            foreach (var pi in recording.Metadata.Players)
+            // Diagnostic: log final map and scene state
+            foreach (var kvp in _characterMap)
             {
-                if (pi.NetworkNumber == _replayLocalNetworkNumber) continue;
-
-                Character.Animals animal = Character.Animals.CHICKEN;
-                if (!string.IsNullOrEmpty(pi.Animal))
-                    System.Enum.TryParse(pi.Animal, out animal);
-                if (animal == Character.Animals.NONE) continue;
-
-                Character c = UnityEngine.Object.Instantiate(gc.CharacterPrefab);
-                c.gameObject.name = animal.ToString() + "_Replay";
-                c.NetworkCharacterSprite = animal;
-                c.NetworknetworkNumber = pi.NetworkNumber;
-                if (pi.Outfits != null && pi.Outfits.Length > 0)
-                    c.SetOutfitsFromArray(pi.Outfits);
-                c.gameObject.SetActive(true);
-                c.Enable(false);
-                _spawnedCharacters.Add(c.gameObject);
-                MapCharacterInternal(pi.NetworkNumber, c);
-                Plugin.Logger.LogInfo($"[ReplayLaunch:Ready] Spawned extra P{pi.NetworkNumber}: {animal}");
+                Plugin.Logger.LogInfo(
+                    $"[Diag] Map[{kvp.Key}] -> {kvp.Value.gameObject.name} " +
+                    $"sprite={kvp.Value.CharacterSprite}");
+            }
+            foreach (var ch in UnityEngine.Object.FindObjectsOfType<Character>())
+            {
+                Plugin.Logger.LogInfo(
+                    $"[Diag] Scene: name={ch.gameObject.name} " +
+                    $"sprite={ch.CharacterSprite} netNum={ch.networkNumber} " +
+                    $"active={ch.gameObject.activeInHierarchy}");
             }
 
             // Disable gameplay and start playback
@@ -491,6 +556,25 @@ namespace UCHCameraMod
                 Plugin.Logger.LogInfo("[ReplayLaunch:Stop] Cleaning up standalone replay...");
                 DestroyReplayCharacters();
                 Plugin.Logger.LogInfo("[ReplayLaunch:Stop] Destroyed extra characters");
+
+                foreach (var p in _fakePlayers)
+                {
+                    if (p == null) continue;
+                    if (p.AssociatedLobbyPlayer != null && p.AssociatedLobbyPlayer.gameObject != null)
+                        UnityEngine.Object.Destroy(p.AssociatedLobbyPlayer.gameObject);
+                    else
+                        PlayerManager.GetInstance().RemovePlayer(p.Number);
+                }
+                _fakePlayers.Clear();
+
+                foreach (var go in _dummyControllerObjects)
+                {
+                    if (go != null) UnityEngine.Object.Destroy(go);
+                }
+                _dummyControllerObjects.Clear();
+                _lobbyNumToRecordedNum.Clear();
+
+                Plugin.Logger.LogInfo("[ReplayLaunch:Stop] Cleaned up fake players");
                 Plugin.Logger.LogInfo("[ReplayLaunch:Stop] Returning to treehouse...");
                 ReturnToTreehouse();
                 _standaloneReplay = false;
