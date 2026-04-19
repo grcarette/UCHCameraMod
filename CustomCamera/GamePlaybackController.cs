@@ -155,42 +155,250 @@ namespace UCHCameraMod
             CustomLevelPortal portal,
             LevelSelectController lsc)
         {
-            var players = recording.Metadata.Players;
-
-            LobbyPlayer realLocalLobby = null;
-            foreach (var slot in LobbyManager.instance.lobbySlots)
+            var players = new List<PlayerInfo>(recording.Metadata.Players);
+            players.Sort((a, b) => a.NetworkNumber.CompareTo(b.NetworkNumber));
+            if (players.Count == 0)
             {
-                var lp = slot as LobbyPlayer;
-                if (lp != null && lp.IsLocalPlayer) { realLocalLobby = lp; break; }
-            }
-
-            if (realLocalLobby == null)
-            {
-                Plugin.Logger.LogError("[ReplayLaunch:Config] No real local LobbyPlayer found");
+                Plugin.Logger.LogError("[ReplayLaunch] Recording has no players");
                 yield break;
             }
 
-            _originalAnimal = realLocalLobby.PickedAnimal;
-            _originalOutfits = new int[realLocalLobby.characterOutfitsList.Count];
-            for (int i = 0; i < realLocalLobby.characterOutfitsList.Count; i++)
-                _originalOutfits[i] = realLocalLobby.characterOutfitsList[i];
+            // ── Phase 0a: Clear all non-host locals ────────────────────────
+            yield return ClearNonHostLocals();
 
-            ConfigureLobbyPlayerAsReplay(realLocalLobby, players[0]);
-
-            yield return null;
-
-            for (int i = 1; i < players.Count; i++)
+            // ── Phase 0b: Find the host ────────────────────────────────────
+            LobbyPlayer host = null;
+            foreach (var slot in LobbyManager.instance.lobbySlots)
             {
-                yield return SpawnAndConfigureFakePlayer(players[i]);
+                var lp = slot as LobbyPlayer;
+                if (lp != null && lp.IsLocalPlayer) { host = lp; break; }
             }
 
+            if (host == null)
+            {
+                Plugin.Logger.LogError("[ReplayLaunch] No host LobbyPlayer found");
+                yield break;
+            }
+
+            // Save host's original state for restore on Stop
+            _originalAnimal = host.PickedAnimal;
+            _originalOutfits = new int[host.characterOutfitsList.Count];
+            for (int i = 0; i < host.characterOutfitsList.Count; i++)
+                _originalOutfits[i] = host.characterOutfitsList[i];
+
+            Plugin.Logger.LogInfo(
+                $"[ReplayLaunch:Enum] Host P{host.networkNumber} ({host.PickedAnimal}), " +
+                $"recording has {players.Count} player(s)");
+
+            // ── Phase 1: Unpick host's character ───────────────────────────
+            if (host.CharacterInstance != null)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[ReplayLaunch:Unpick] P{host.networkNumber} unpicking {host.PickedAnimal}");
+                host.CallCmdRemoveCharacter();
+                if (host.LocalPlayer != null)
+                {
+                    if (host.LocalPlayer.UseController != null)
+                        host.LocalPlayer.UseController.AssociateCharacter(
+                            Character.Animals.NONE, host.localNumber);
+                    host.LocalPlayer.PlayerCharacter = null;
+                }
+
+                // Wait for unpick to propagate
+                float elapsed = 0f;
+                while (elapsed < 2f
+                    && (host.CharacterInstance != null
+                        || host.PickedAnimal != Character.Animals.NONE))
+                {
+                    elapsed += Time.unscaledDeltaTime;
+                    yield return null;
+                }
+            }
+
+            // ── Phase 2: Spawn fakes for players[1..] ──────────────────────
+            for (int i = 1; i < players.Count; i++)
+                yield return SpawnFakePlayer(players[i]);
+
+            // Collect all locals now (host + fakes)
+            var allLocals = new List<LobbyPlayer>();
+            foreach (var slot in LobbyManager.instance.lobbySlots)
+            {
+                var lp = slot as LobbyPlayer;
+                if (lp != null && lp.IsLocalPlayer)
+                    allLocals.Add(lp);
+            }
+            Plugin.Logger.LogInfo($"[ReplayLaunch:Fakes] {allLocals.Count} local(s) total");
+
+            // ── Phase 3: Assign — host gets preferred animal first ────────
+            _lobbyNumToRecordedNum.Clear();
+
+            // Build a pair-up plan. If the host's original animal matches a recorded
+            // player's animal, pair them. Otherwise host takes players[0]. Everyone
+            // else fills in order.
+            var pairs = new List<(LobbyPlayer lp, PlayerInfo info)>();
+            var remainingPlayers = new List<PlayerInfo>(players);
+
+            // Try to match host by animal
+            PlayerInfo hostMatch = null;
+            foreach (var p in remainingPlayers)
+            {
+                if (System.Enum.TryParse(p.Animal, out Character.Animals a)
+                    && a == _originalAnimal)
+                {
+                    hostMatch = p;
+                    break;
+                }
+            }
+            if (hostMatch != null)
+            {
+                pairs.Add((host, hostMatch));
+                remainingPlayers.Remove(hostMatch);
+            }
+            else
+            {
+                pairs.Add((host, remainingPlayers[0]));
+                remainingPlayers.RemoveAt(0);
+            }
+
+            // Fakes take whatever's left, in order
+            int fakeIdx = 0;
+            for (int i = 1; i < allLocals.Count && fakeIdx < remainingPlayers.Count; i++)
+            {
+                pairs.Add((allLocals[i], remainingPlayers[fakeIdx]));
+                fakeIdx++;
+            }
+
+            // Apply the pairings
+            foreach (var (lp, info) in pairs)
+            {
+                if (!System.Enum.TryParse(info.Animal, out Character.Animals targetAnimal))
+                    targetAnimal = Character.Animals.CHICKEN;
+
+                Character targetChar = FindUnpickedCharacter(targetAnimal);
+                if (targetChar == null)
+                {
+                    Plugin.Logger.LogError(
+                        $"[ReplayLaunch:Assign] P{lp.networkNumber}: no unpicked " +
+                        $"{targetAnimal} available");
+                    continue;
+                }
+
+                if (info.Outfits != null && info.Outfits.Length > 0)
+                    lp.CallCmdSetOutfitsFromArray(info.Outfits);
+
+                lp.CallCmdAssignCharacter(
+                    targetChar.netId.Value,
+                    lp.networkNumber,
+                    lp.localNumber,
+                    true);
+
+                lp.NetworkPickedAnimal = targetAnimal;
+                lp.NetworkplayerStatus = LobbyPlayer.Status.CHARACTER;
+
+                if (lp.LocalPlayer != null)
+                {
+                    lp.LocalPlayer.PlayerCharacter = targetChar;
+                    if (lp.LocalPlayer.UseController != null)
+                        lp.LocalPlayer.UseController.AssociateCharacter(
+                            targetAnimal, lp.localNumber);
+                }
+
+                _lobbyNumToRecordedNum[lp.networkNumber] = info.NetworkNumber;
+
+                Plugin.Logger.LogInfo(
+                    $"[ReplayLaunch:Assign] P{lp.networkNumber} -> {targetAnimal} " +
+                    $"(recorded P{info.NetworkNumber})");
+            }
+
+            // ── Phase 5: Launch ────────────────────────────────────────────
+            yield return null;
             yield return null;
 
             GameSettings.GetInstance().GameMode = GameState.GameMode.FREEPLAY;
             lsc.LaunchLevel(portal);
         }
 
-        private IEnumerator SpawnAndConfigureFakePlayer(PlayerInfo info)
+        private IEnumerator ClearNonHostLocals()
+        {
+            var toRemove = new List<LobbyPlayer>();
+            for (int i = 1; i < LobbyManager.instance.lobbySlots.Length; i++)
+            {
+                var lp = LobbyManager.instance.lobbySlots[i] as LobbyPlayer;
+                if (lp != null && lp.IsLocalPlayer)
+                    toRemove.Add(lp);
+            }
+
+            if (toRemove.Count == 0) yield break;
+
+            Plugin.Logger.LogInfo(
+                $"[ReplayLaunch:Clear] Removing {toRemove.Count} non-host local(s)");
+
+            foreach (var lp in toRemove)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[ReplayLaunch:Clear] Removing P{lp.networkNumber} ({lp.PickedAnimal})");
+                lp.RemovePlayer();
+            }
+
+            // Wait up to 2s for slots to actually clear
+            float elapsed = 0f;
+            while (elapsed < 2f)
+            {
+                bool allGone = true;
+                for (int i = 1; i < LobbyManager.instance.lobbySlots.Length; i++)
+                {
+                    var lp = LobbyManager.instance.lobbySlots[i] as LobbyPlayer;
+                    if (lp != null && lp.IsLocalPlayer) { allGone = false; break; }
+                }
+                if (allGone) yield break;
+                elapsed += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            Plugin.Logger.LogWarning(
+                "[ReplayLaunch:Clear] Timed out waiting for non-host locals to clear");
+        }
+
+        private IEnumerator WaitForUnpickPropagation(List<LobbyPlayer> lobbyPlayers, float timeout = 2f)
+        {
+            float elapsed = 0f;
+            while (elapsed < timeout)
+            {
+                bool allClear = true;
+                foreach (var lp in lobbyPlayers)
+                {
+                    if (lp == null) continue;
+                    if (lp.CharacterInstance != null || lp.PickedAnimal != Character.Animals.NONE)
+                    {
+                        allClear = false;
+                        break;
+                    }
+                }
+                if (allClear) yield break;
+
+                elapsed += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            Plugin.Logger.LogWarning(
+                "[ReplayLaunch:Unpick] Timed out waiting for unpick propagation; proceeding anyway");
+        }
+
+        private Character FindUnpickedCharacter(Character.Animals animal)
+        {
+            var lsc = LevelSelectController.lastInstance;
+            if (lsc == null) return null;
+
+            foreach (var startPoint in lsc.StartingPoints)
+            {
+                Character c = startPoint.GetComponentInChildren<Character>();
+                if (c != null && c.CharacterSprite == animal && !c.Picked)
+                    return c;
+            }
+            return null;
+        }
+
+        private IEnumerator SpawnFakePlayer(PlayerInfo info)
         {
             var go = new GameObject($"ReplayDummyController_P{info.NetworkNumber}");
             UnityEngine.Object.DontDestroyOnLoad(go);
@@ -201,13 +409,14 @@ namespace UCHCameraMod
             if (fakePlayer == null)
             {
                 Plugin.Logger.LogError(
-                    $"[ReplayLaunch:Fake] Failed to add fake Player for {info.Animal} " +
-                    $"(PlayerManager full? max is {PlayerManager.maxPlayers})");
+                    $"[ReplayLaunch:Fake] Could not add Player (PlayerManager full? " +
+                    $"max={PlayerManager.maxPlayers})");
                 UnityEngine.Object.Destroy(go);
                 yield break;
             }
             _fakePlayers.Add(fakePlayer);
 
+            // Stage 1: wait for LobbyPlayer to spawn and InitPlayer to finish
             float timeout = 5f;
             while (timeout > 0f)
             {
@@ -218,88 +427,38 @@ namespace UCHCameraMod
                 yield return null;
             }
 
-            if (fakePlayer.AssociatedLobbyPlayer == null
-                || !fakePlayer.AssociatedLobbyPlayer.Initialized)
+            var lp = fakePlayer.AssociatedLobbyPlayer;
+            if (lp == null || !lp.Initialized)
             {
                 Plugin.Logger.LogError(
-                    $"[ReplayLaunch:Fake] Timed out waiting for LobbyPlayer init " +
-                    $"for recorded P{info.NetworkNumber}");
+                    "[ReplayLaunch:Fake] Timed out waiting for LobbyPlayer init");
                 yield break;
             }
 
-            ConfigureLobbyPlayerAsReplay(fakePlayer.AssociatedLobbyPlayer, info);
+            // Stage 2: wait for cursor to spawn — a stronger signal that the LobbyPlayer
+            // is fully integrated. Mirror's `connectionToClient.isReady` is per-connection
+            // and doesn't flip false when a new PlayerController is added, so it's not
+            // a reliable per-fake signal. The cursor is spawned via CmdCreateCursorForPlayer
+            // only after LobbyPlayer's own setup completes.
+            float cursorTimeout = 3f;
+            while (cursorTimeout > 0f)
+            {
+                if (lp.CursorInstance != null) break;
+                cursorTimeout -= Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            if (lp.CursorInstance == null)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[ReplayLaunch:Fake] P{lp.networkNumber} has no cursor after 3s; " +
+                    $"LobbyPlayer may not be fully registered");
+            }
+
             Plugin.Logger.LogInfo(
-                $"[ReplayLaunch:Fake] Configured fake LobbyPlayer netNum=" +
-                $"{fakePlayer.AssociatedLobbyPlayer.networkNumber} as {info.Animal} " +
-                $"(recorded P{info.NetworkNumber})");
-        }
-
-        private void ConfigureLobbyPlayerAsReplay(LobbyPlayer lp, PlayerInfo info)
-        {
-            Character.Animals targetAnimal = Character.Animals.CHICKEN;
-            if (!string.IsNullOrEmpty(info.Animal))
-                System.Enum.TryParse(info.Animal, out targetAnimal);
-
-            _lobbyNumToRecordedNum[lp.networkNumber] = info.NetworkNumber;
-
-            if (lp.PickedAnimal == targetAnimal && lp.CharacterInstance != null)
-            {
-                if (info.Outfits != null && info.Outfits.Length > 0)
-                    lp.CallCmdSetOutfitsFromArray(info.Outfits);
-                Plugin.Logger.LogInfo(
-                    $"[ReplayLaunch:Config] P{lp.networkNumber} already {targetAnimal}, refreshed outfits");
-                return;
-            }
-
-            if (lp.CharacterInstance != null)
-            {
-                Plugin.Logger.LogInfo(
-                    $"[ReplayLaunch:Config] P{lp.networkNumber} removing current character {lp.PickedAnimal}");
-                lp.CallCmdRemoveCharacter();
-                if (lp.LocalPlayer != null && lp.LocalPlayer.UseController != null)
-                    lp.LocalPlayer.UseController.AssociateCharacter(Character.Animals.NONE, lp.localNumber);
-                if (lp.LocalPlayer != null)
-                    lp.LocalPlayer.PlayerCharacter = null;
-            }
-
-            var lsc = LevelSelectController.lastInstance;
-            if (lsc == null)
-            {
-                Plugin.Logger.LogError("[ReplayLaunch:Config] No LevelSelectController");
-                return;
-            }
-
-            Character targetChar = null;
-            foreach (var startPoint in lsc.StartingPoints)
-            {
-                Character c = startPoint.GetComponentInChildren<Character>();
-                if (c != null && c.CharacterSprite == targetAnimal && !c.Picked)
-                {
-                    targetChar = c;
-                    break;
-                }
-            }
-
-            if (targetChar == null)
-            {
-                Plugin.Logger.LogError(
-                    $"[ReplayLaunch:Config] No unpicked {targetAnimal} available for P{lp.networkNumber}");
-                return;
-            }
-
-            if (info.Outfits != null && info.Outfits.Length > 0)
-                lp.CallCmdSetOutfitsFromArray(info.Outfits);
-
-            lp.CallCmdAssignCharacter(targetChar.netId.Value, lp.networkNumber, lp.localNumber, true);
-
-            if (lp.LocalPlayer != null)
-                lp.LocalPlayer.PlayerCharacter = targetChar;
-            lp.PlayerStatus = LobbyPlayer.Status.CHARACTER;
-            lp.NetworkPickedAnimal = targetAnimal;
-            if (lp.LocalPlayer != null && lp.LocalPlayer.UseController != null)
-                lp.LocalPlayer.UseController.AssociateCharacter(targetAnimal, lp.localNumber);
-
-            Plugin.Logger.LogInfo($"[ReplayLaunch:Config] P{lp.networkNumber} picked {targetAnimal}");
+                $"[ReplayLaunch:Fake] Spawned LobbyPlayer netNum={lp.networkNumber} " +
+                $"for recorded P{info.NetworkNumber} " +
+                $"(cursor={(lp.CursorInstance != null ? "yes" : "no")})");
         }
 
         public IEnumerator OnGameReadyForReplay(GameControl gc)
@@ -557,13 +716,13 @@ namespace UCHCameraMod
                 DestroyReplayCharacters();
                 Plugin.Logger.LogInfo("[ReplayLaunch:Stop] Destroyed extra characters");
 
+                // Tear down fake local players. Don't touch LobbyPlayer GameObjects —
+                // the scene transition handles their removal, and our `AssociatedLobbyPlayer`
+                // pointers are unreliable after a scene change.
                 foreach (var p in _fakePlayers)
                 {
                     if (p == null) continue;
-                    if (p.AssociatedLobbyPlayer != null && p.AssociatedLobbyPlayer.gameObject != null)
-                        UnityEngine.Object.Destroy(p.AssociatedLobbyPlayer.gameObject);
-                    else
-                        PlayerManager.GetInstance().RemovePlayer(p.Number);
+                    PlayerManager.GetInstance().RemovePlayer(p.Number);
                 }
                 _fakePlayers.Clear();
 
@@ -572,6 +731,7 @@ namespace UCHCameraMod
                     if (go != null) UnityEngine.Object.Destroy(go);
                 }
                 _dummyControllerObjects.Clear();
+
                 _lobbyNumToRecordedNum.Clear();
 
                 Plugin.Logger.LogInfo("[ReplayLaunch:Stop] Cleaned up fake players");
