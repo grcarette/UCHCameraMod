@@ -84,6 +84,55 @@ namespace UCHCameraMod
                 sb.AppendLine($"SG={snd.IsGhost}");
             }
 
+            sb.AppendLine($"PhaseEventCount={rec.PhaseEvents.Count}");
+            if (rec.PhaseEvents.Count > 0)
+            {
+                sb.AppendLine("---PHASES");
+                foreach (var pe in rec.PhaseEvents)
+                {
+                    sb.AppendLine($"T={pe.Time}");
+                    sb.AppendLine($"P={pe.Phase}");
+                }
+            }
+
+            sb.AppendLine($"PartyBoxEventCount={rec.PartyBoxEvents.Count}");
+            foreach (var be in rec.PartyBoxEvents)
+            {
+                sb.AppendLine("---BOX");
+                sb.AppendLine($"T={be.Time}");
+                sb.AppendLine($"O={be.Opened}");
+                sb.AppendLine($"E={be.IsExtraBox}");
+            }
+
+            sb.AppendLine($"ItemPickupCount={rec.ItemPickupEvents.Count}");
+            foreach (var ip in rec.ItemPickupEvents)
+            {
+                sb.AppendLine("---IPICKUP");
+                sb.AppendLine($"T={ip.Time}");
+                sb.AppendLine($"C={ip.CursorNetNum}");
+                sb.AppendLine($"B={ip.BlockIndex}");
+                sb.AppendLine($"P={ip.PieceID}");
+            }
+
+            sb.AppendLine($"ItemPlacedCount={rec.ItemPlacedEvents.Count}");
+            foreach (var ip in rec.ItemPlacedEvents)
+            {
+                sb.AppendLine("---IPLACED");
+                sb.AppendLine($"T={ip.Time}");
+                sb.AppendLine($"P={ip.PieceID}");
+                sb.AppendLine($"XY={ip.PosX},{ip.PosY}");
+                sb.AppendLine($"R={ip.RotZ}");
+                sb.AppendLine($"S={ip.ScaleX},{ip.ScaleY}");
+            }
+
+            sb.AppendLine($"ItemDestroyedCount={rec.ItemDestroyedEvents.Count}");
+            foreach (var id in rec.ItemDestroyedEvents)
+            {
+                sb.AppendLine("---IDESTROY");
+                sb.AppendLine($"T={id.Time}");
+                sb.AppendLine($"P={id.PieceID}");
+            }
+
             foreach (var frame in rec.Frames)
             {
                 sb.AppendLine("---FRAME");
@@ -101,6 +150,34 @@ namespace UCHCameraMod
                     sb.AppendLine($"V={snap.Visible}");
                     sb.AppendLine($"A={snap.AnimationState}|{snap.AnimationTime}|{snap.AnimationStateHash}");
                 }
+
+                sb.AppendLine($"CursorCount={frame.Cursors.Count}");
+                foreach (var cur in frame.Cursors)
+                {
+                    sb.AppendLine("---CUR");
+                    sb.AppendLine($"N={cur.NetworkNumber}");
+                    sb.AppendLine($"P={cur.PosX},{cur.PosY}");
+                    sb.AppendLine($"V={cur.Visible}");
+                }
+
+                sb.AppendLine($"PickCursorCount={frame.PickCursors.Count}");
+                foreach (var cur in frame.PickCursors)
+                {
+                    sb.AppendLine("---PCUR");
+                    sb.AppendLine($"N={cur.NetworkNumber}");
+                    sb.AppendLine($"P={cur.PosX},{cur.PosY}");
+                    sb.AppendLine($"V={cur.Visible}");
+                }
+
+                sb.AppendLine($"ItemStateCount={frame.ItemStates.Count}");
+                foreach (var st in frame.ItemStates)
+                {
+                    sb.AppendLine("---ISTATE");
+                    sb.AppendLine($"P={st.PieceID}");
+                    sb.AppendLine($"XY={st.PosX},{st.PosY}");
+                    sb.AppendLine($"R={st.RotZ}");
+                    sb.AppendLine($"S={st.ScaleX},{st.ScaleY}");
+                }
             }
 
             File.WriteAllText(path, sb.ToString());
@@ -110,18 +187,120 @@ namespace UCHCameraMod
         {
             var rec = new Recording();
             RecordingFrame currentFrame = null;
+            bool inPhaseSection = false;
+            bool inBoxSection = false;
+            bool inItemPickupBlock = false;
+            bool inItemPlacedBlock = false;
+            bool inItemDestroyBlock = false;
+            bool inCursorBlock = false;
+            bool inPickCursorBlock = false;
+            bool inItemStateBlock = false;
 
             foreach (string line in File.ReadAllLines(path))
             {
+                if (line == "---PHASES")
+                {
+                    inPhaseSection = true;
+                    inBoxSection = false;
+                    continue;
+                }
+
+                if (line == "---BOX")
+                {
+                    inBoxSection = true;
+                    inPhaseSection = false;
+                    inItemPickupBlock = false;
+                    inItemPlacedBlock = false;
+                    inItemDestroyBlock = false;
+                    rec.PartyBoxEvents.Add(new PartyBoxVisibilityEvent());
+                    continue;
+                }
+
+                if (line == "---IPICKUP")
+                {
+                    inItemPickupBlock = true;
+                    inItemPlacedBlock = false;
+                    inItemDestroyBlock = false;
+                    inPhaseSection = false;
+                    inBoxSection = false;
+                    rec.ItemPickupEvents.Add(new ItemPickupEvent());
+                    continue;
+                }
+
+                if (line == "---IPLACED")
+                {
+                    inItemPlacedBlock = true;
+                    inItemPickupBlock = false;
+                    inItemDestroyBlock = false;
+                    inPhaseSection = false;
+                    inBoxSection = false;
+                    rec.ItemPlacedEvents.Add(new ItemPlacedEvent());
+                    continue;
+                }
+
+                if (line == "---IDESTROY")
+                {
+                    inItemDestroyBlock = true;
+                    inItemPickupBlock = false;
+                    inItemPlacedBlock = false;
+                    inPhaseSection = false;
+                    inBoxSection = false;
+                    rec.ItemDestroyedEvents.Add(new ItemDestroyedEvent());
+                    continue;
+                }
+
                 if (line == "---FRAME")
                 {
+                    inPhaseSection = false;
+                    inBoxSection = false;
+                    inItemPickupBlock = false;
+                    inItemPlacedBlock = false;
+                    inItemDestroyBlock = false;
+                    inCursorBlock = false;
+                    inPickCursorBlock = false;
+                    inItemStateBlock = false;
                     currentFrame = new RecordingFrame();
                     rec.Frames.Add(currentFrame);
                     continue;
                 }
 
                 if (line == "---CHAR")
+                {
+                    inCursorBlock = false;
+                    inPickCursorBlock = false;
+                    inItemStateBlock = false;
                     continue;
+                }
+
+                if (line == "---CUR")
+                {
+                    inCursorBlock = true;
+                    inPickCursorBlock = false;
+                    inItemStateBlock = false;
+                    if (currentFrame != null)
+                        currentFrame.Cursors.Add(new CursorSnapshot());
+                    continue;
+                }
+
+                if (line == "---PCUR")
+                {
+                    inPickCursorBlock = true;
+                    inCursorBlock = false;
+                    inItemStateBlock = false;
+                    if (currentFrame != null)
+                        currentFrame.PickCursors.Add(new PickCursorSnapshot());
+                    continue;
+                }
+
+                if (line == "---ISTATE")
+                {
+                    inItemStateBlock = true;
+                    inPickCursorBlock = false;
+                    inCursorBlock = false;
+                    if (currentFrame != null)
+                        currentFrame.ItemStates.Add(new ItemStateSnapshot());
+                    continue;
+                }
 
                 if (line == "---PLAYER")
                     continue;
@@ -210,6 +389,85 @@ namespace UCHCameraMod
                         case "SnapshotSize":
                             break;
                         case "SoundCount":
+                            break;
+                        case "PhaseEventCount":
+                            break;
+                        case "CursorCount":
+                            break;
+                        case "PickCursorCount":
+                            break;
+                        case "T":
+                            if (inPhaseSection)
+                            {
+                                var pe = new PhaseEvent();
+                                float.TryParse(val, out pe.Time);
+                                rec.PhaseEvents.Add(pe);
+                            }
+                            else if (inBoxSection && rec.PartyBoxEvents.Count > 0)
+                                float.TryParse(val, out rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].Time);
+                            else if (inItemPickupBlock && rec.ItemPickupEvents.Count > 0)
+                                float.TryParse(val, out rec.ItemPickupEvents[rec.ItemPickupEvents.Count - 1].Time);
+                            else if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
+                                float.TryParse(val, out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].Time);
+                            else if (inItemDestroyBlock && rec.ItemDestroyedEvents.Count > 0)
+                                float.TryParse(val, out rec.ItemDestroyedEvents[rec.ItemDestroyedEvents.Count - 1].Time);
+                            break;
+                        case "O":
+                            if (inBoxSection && rec.PartyBoxEvents.Count > 0)
+                                bool.TryParse(val, out rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].Opened);
+                            break;
+                        case "E":
+                            if (inBoxSection && rec.PartyBoxEvents.Count > 0)
+                                bool.TryParse(val, out rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].IsExtraBox);
+                            break;
+                        case "C":
+                            if (inItemPickupBlock && rec.ItemPickupEvents.Count > 0)
+                                int.TryParse(val, out rec.ItemPickupEvents[rec.ItemPickupEvents.Count - 1].CursorNetNum);
+                            break;
+                        case "B":
+                            if (inItemPickupBlock && rec.ItemPickupEvents.Count > 0)
+                                int.TryParse(val, out rec.ItemPickupEvents[rec.ItemPickupEvents.Count - 1].BlockIndex);
+                            break;
+                        case "P":
+                            if (inPhaseSection && rec.PhaseEvents.Count > 0)
+                                rec.PhaseEvents[rec.PhaseEvents.Count - 1].Phase = val;
+                            else if (inItemPickupBlock && rec.ItemPickupEvents.Count > 0)
+                                int.TryParse(val, out rec.ItemPickupEvents[rec.ItemPickupEvents.Count - 1].PieceID);
+                            else if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
+                                int.TryParse(val, out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].PieceID);
+                            else if (inItemDestroyBlock && rec.ItemDestroyedEvents.Count > 0)
+                                int.TryParse(val, out rec.ItemDestroyedEvents[rec.ItemDestroyedEvents.Count - 1].PieceID);
+                            break;
+                        case "XY":
+                            if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
+                            {
+                                var xy = val.Split(',');
+                                if (xy.Length == 2)
+                                {
+                                    float.TryParse(xy[0], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].PosX);
+                                    float.TryParse(xy[1], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].PosY);
+                                }
+                            }
+                            break;
+                        case "R":
+                            if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
+                                float.TryParse(val, out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].RotZ);
+                            break;
+                        case "S":
+                            if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
+                            {
+                                var sc = val.Split(',');
+                                if (sc.Length == 2)
+                                {
+                                    float.TryParse(sc[0], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].ScaleX);
+                                    float.TryParse(sc[1], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].ScaleY);
+                                }
+                            }
+                            break;
+                        case "PartyBoxEventCount":
+                        case "ItemPickupCount":
+                        case "ItemPlacedCount":
+                        case "ItemDestroyedCount":
                             break;
                         case "ST":
                             if (rec.SoundEvents.Count > 0)
@@ -332,6 +590,72 @@ namespace UCHCameraMod
                     {
                         float.TryParse(val, out currentFrame.Time);
                     }
+                    else if (inItemStateBlock)
+                    {
+                        if (currentFrame.ItemStates.Count > 0)
+                        {
+                            var state = currentFrame.ItemStates[currentFrame.ItemStates.Count - 1];
+                            switch (key)
+                            {
+                                case "P": int.TryParse(val, out state.PieceID); break;
+                                case "XY":
+                                    var xy = val.Split(',');
+                                    if (xy.Length == 2) { float.TryParse(xy[0], out state.PosX); float.TryParse(xy[1], out state.PosY); }
+                                    break;
+                                case "R": float.TryParse(val, out state.RotZ); break;
+                                case "S":
+                                    var sc = val.Split(',');
+                                    if (sc.Length == 2) { float.TryParse(sc[0], out state.ScaleX); float.TryParse(sc[1], out state.ScaleY); }
+                                    break;
+                            }
+                        }
+                    }
+                    else if (inPickCursorBlock)
+                    {
+                        // Pick cursor snapshot fields — block started by ---PCUR
+                        if (currentFrame.PickCursors.Count > 0)
+                        {
+                            int last = currentFrame.PickCursors.Count - 1;
+                            var cur = currentFrame.PickCursors[last];
+                            switch (key)
+                            {
+                                case "N":
+                                    int.TryParse(val, out cur.NetworkNumber);
+                                    break;
+                                case "P":
+                                    var pp = val.Split(',');
+                                    if (pp.Length == 2) { float.TryParse(pp[0], out cur.PosX); float.TryParse(pp[1], out cur.PosY); }
+                                    break;
+                                case "V":
+                                    bool.TryParse(val, out cur.Visible);
+                                    break;
+                            }
+                            currentFrame.PickCursors[last] = cur;
+                        }
+                    }
+                    else if (inCursorBlock)
+                    {
+                        // Cursor snapshot fields — block started by ---CUR
+                        if (currentFrame.Cursors.Count > 0)
+                        {
+                            int last = currentFrame.Cursors.Count - 1;
+                            var cur = currentFrame.Cursors[last];
+                            switch (key)
+                            {
+                                case "N":
+                                    int.TryParse(val, out cur.NetworkNumber);
+                                    break;
+                                case "P":
+                                    var cp = val.Split(',');
+                                    if (cp.Length == 2) { float.TryParse(cp[0], out cur.PosX); float.TryParse(cp[1], out cur.PosY); }
+                                    break;
+                                case "V":
+                                    bool.TryParse(val, out cur.Visible);
+                                    break;
+                            }
+                            currentFrame.Cursors[last] = cur;
+                        }
+                    }
                     else if (key == "N")
                     {
                         // Start a new character snapshot
@@ -380,9 +704,17 @@ namespace UCHCameraMod
                 }
             }
 
+            bool hasCursors = rec.Frames.Count > 0 && rec.Frames[0].Cursors.Count > 0;
+            bool hasPickCursors = rec.Frames.Count > 0 && rec.Frames[0].PickCursors.Count > 0;
             Plugin.Logger.LogInfo($"[RecordingIO] Loaded: Name={rec.Name} " +
                                   $"Frames={rec.Frames.Count} " +
                                   $"Players={rec.Metadata?.Players.Count ?? 0} " +
+                                  $"PhaseEvents={rec.PhaseEvents.Count} " +
+                                  $"BoxEvents={rec.PartyBoxEvents.Count} " +
+                                  $"Pickups={rec.ItemPickupEvents.Count} " +
+                                  $"Placed={rec.ItemPlacedEvents.Count} " +
+                                  $"Destroyed={rec.ItemDestroyedEvents.Count} " +
+                                  $"Cursors={hasCursors} PickCursors={hasPickCursors} " +
                                   $"SceneName={rec.Metadata?.SceneName ?? "none"} " +
                                   $"HasSnapshot={rec.SnapshotBytes != null} " +
                                   $"SnapshotBytes={rec.SnapshotBytes?.Length ?? 0}");

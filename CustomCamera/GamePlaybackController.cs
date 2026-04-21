@@ -30,6 +30,11 @@ namespace UCHCameraMod
         private int _nextSoundIndex;
         public bool SoundEnabled = true;
 
+        public GameControl.GamePhase CurrentRecordedPhase { get; private set; }
+            = GameControl.GamePhase.NONE;
+        private int _nextPhaseEventIdx;
+        private int _nextBoxEventIdx;
+
         private Recording _pendingReplayRecording;
         private int _replayLocalNetworkNumber = -1;
         private GameControl _replayGameControl;
@@ -39,6 +44,22 @@ namespace UCHCameraMod
         private List<Player> _fakePlayers = new List<Player>();
         private List<GameObject> _dummyControllerObjects = new List<GameObject>();
         private Dictionary<int, int> _lobbyNumToRecordedNum = new Dictionary<int, int>();
+        private readonly Dictionary<int, Cursor> _cursorMap = new Dictionary<int, Cursor>();
+        private readonly Dictionary<int, bool> _cursorLastVisible = new Dictionary<int, bool>();
+        private readonly Dictionary<int, PartyPickCursor> _pickCursorMap = new Dictionary<int, PartyPickCursor>();
+        private readonly Dictionary<int, bool> _pickCursorLastVisible = new Dictionary<int, bool>();
+        private PartyBox _replayPartyBox;
+        private bool _boxCurrentlyShown;
+        private ZoomCamera _zoomCamera;
+        private readonly Dictionary<int, Placeable> _heldPieces = new Dictionary<int, Placeable>();
+        private readonly Dictionary<int, Placeable> _placedPieces = new Dictionary<int, Placeable>();
+        private int _nextPickupEventIdx;
+        private int _nextPlacedEventIdx;
+        private int _nextDestroyedEventIdx;
+
+        private static readonly System.Reflection.FieldInfo _zoomCameraPhaseField =
+            typeof(ZoomCamera).GetField("currentPhase",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
         private void Awake()
         {
@@ -51,6 +72,13 @@ namespace UCHCameraMod
                                   $"frames={(recording?.Frames.Count ?? -1)}");
             _recording = recording;
             CurrentTime = 0f;
+            _nextPhaseEventIdx = 0;
+            _nextBoxEventIdx = 0;
+            _boxCurrentlyShown = false;
+            _nextPickupEventIdx = 0;
+            _nextPlacedEventIdx = 0;
+            _nextDestroyedEventIdx = 0;
+            CurrentRecordedPhase = GameControl.GamePhase.NONE;
         }
 
         public void Play()
@@ -505,6 +533,10 @@ namespace UCHCameraMod
             _characterMap.Clear();
             _rbMap.Clear();
             _animMap.Clear();
+            _cursorMap.Clear();
+            _cursorLastVisible.Clear();
+            _pickCursorMap.Clear();
+            _pickCursorLastVisible.Clear();
 
             // Map game-spawned characters using lobby→recorded number table
             foreach (GamePlayer gp in gc.CurrentPlayerQueue)
@@ -520,7 +552,47 @@ namespace UCHCameraMod
                 Plugin.Logger.LogInfo(
                     $"[ReplayLaunch:Ready] Mapped GP netNum={gp.networkNumber} " +
                     $"(animal={gp.CharacterInstance.CharacterSprite}) to recorded P{recordedNetNum}");
+
+                if (gp.CursorInstance != null)
+                {
+                    _cursorMap[recordedNetNum] = gp.CursorInstance;
+                    _cursorLastVisible[recordedNetNum] = false;
+                }
+
             }
+
+            int hidden = 0;
+            foreach (var cursor in _cursorMap.Values)
+            {
+                if (cursor == null) continue;
+                var controls = cursor.transform.Find("ControlsCanvas");
+                if (controls != null)
+                {
+                    controls.gameObject.SetActive(false);
+                    hidden++;
+                }
+            }
+            Plugin.Logger.LogInfo($"[ReplayLaunch:Cursor] Hid ControlsCanvas on {hidden} cursor(s)");
+
+            bool isPartyRecording = recording.Metadata?.GameMode == "VersusControl";
+            if (isPartyRecording)
+                SpawnReplayPartyBox(gc);
+
+            if (isPartyRecording && _replayPartyBox != null)
+            {
+                foreach (GamePlayer gp in UnityEngine.Object.FindObjectsOfType<GamePlayer>())
+                {
+                    if (gp == null || gp.PartyPickCursor == null) continue;
+                    if (!_lobbyNumToRecordedNum.TryGetValue(gp.networkNumber, out int recNetNum)) continue;
+                    _pickCursorMap[recNetNum] = gp.PartyPickCursor;
+                    _pickCursorLastVisible[recNetNum] = false;
+                }
+                Plugin.Logger.LogInfo($"[ReplayLaunch:PartyBox] Mapped {_pickCursorMap.Count} pick cursor(s)");
+            }
+
+            _zoomCamera = gc?.MainCamera;
+            if (_zoomCameraPhaseField == null)
+                Plugin.Logger.LogWarning("[ReplayLaunch:Camera] ZoomCamera.currentPhase field not found — camera phase transitions disabled");
 
             // Diagnostic: log final map and scene state
             foreach (var kvp in _characterMap)
@@ -546,6 +618,68 @@ namespace UCHCameraMod
             StartPlayback();
 
             Plugin.Logger.LogInfo("[ReplayLaunch:Ready] === PLAYBACK STARTED ===");
+        }
+
+        private void SpawnReplayPartyBox(GameControl gc)
+        {
+            var prefab = VersusControlStartPatch.CachedPartyBoxPrefab;
+            if (prefab == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[ReplayLaunch:PartyBox] PartyBoxPrefab not cached. " +
+                    "Start a party match once to cache it, then replay.");
+                return;
+            }
+
+            if (gc == null || gc.UICamera == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[ReplayLaunch:PartyBox] No UICamera available — skipping box spawn.");
+                return;
+            }
+
+            _replayPartyBox = UnityEngine.Object.Instantiate(
+                prefab, gc.UICamera.transform.position, Quaternion.identity);
+            _replayPartyBox.transform.Translate(0f, 0f, 1f);
+            _replayPartyBox.transform.parent = gc.UICamera.transform;
+            _replayPartyBox.UICamera = gc.UICamera.GetComponent<Camera>();
+
+            _replayPartyBox.ChangeListener(false);
+            _replayPartyBox.SetPlayerCount(_cursorMap.Count);
+            _replayPartyBox.HasAuthority = true;
+
+            foreach (var kvp in _cursorMap)
+            {
+                int recNetNum = kvp.Key;
+                // Find the lobby-side GamePlayer that maps to this recorded network number
+                int lobbyNetNum = -1;
+                foreach (var pair in _lobbyNumToRecordedNum)
+                {
+                    if (pair.Value == recNetNum) { lobbyNetNum = pair.Key; break; }
+                }
+                GamePlayer gp = lobbyNetNum >= 0 ? FindGamePlayer(lobbyNetNum) : null;
+                if (gp == null) continue;
+
+                PartyPickCursor pickCursor = _replayPartyBox.AddPlayer(recNetNum, gp.PickedAnimal);
+                if (pickCursor == null) continue;
+
+                gp.CallCmdAssignCursor(pickCursor.gameObject, gp.networkNumber, gp.localNumber);
+            }
+
+            _replayPartyBox.Hide(false);
+            _boxCurrentlyShown = false;
+
+            Plugin.Logger.LogInfo(
+                $"[ReplayLaunch:PartyBox] Spawned box + {_cursorMap.Count} pick cursor(s)");
+        }
+
+        private GamePlayer FindGamePlayer(int networkNumber)
+        {
+            foreach (GamePlayer gp in UnityEngine.Object.FindObjectsOfType<GamePlayer>())
+            {
+                if (gp != null && gp.networkNumber == networkNumber) return gp;
+            }
+            return null;
         }
 
         private void MapCharacterInternal(int networkNumber, Character c)
@@ -661,6 +795,13 @@ namespace UCHCameraMod
             }
 
             _nextSoundIndex = 0;
+            _nextPhaseEventIdx = 0;
+            _nextBoxEventIdx = 0;
+            _boxCurrentlyShown = false;
+            _nextPickupEventIdx = 0;
+            _nextPlacedEventIdx = 0;
+            _nextDestroyedEventIdx = 0;
+            CurrentRecordedPhase = GameControl.GamePhase.NONE;
             ApplyFrame(0f);
             IsPlaying = true;
             IsPaused = false;
@@ -761,12 +902,59 @@ namespace UCHCameraMod
             _rbMap.Clear();
             _animMap.Clear();
 
+            foreach (var p in _heldPieces.Values) if (p != null) UnityEngine.Object.Destroy(p.gameObject);
+            foreach (var p in _placedPieces.Values) if (p != null) UnityEngine.Object.Destroy(p.gameObject);
+            _heldPieces.Clear();
+            _placedPieces.Clear();
+            _nextPickupEventIdx = _nextPlacedEventIdx = _nextDestroyedEventIdx = 0;
+
+            if (_replayPartyBox != null)
+            {
+                foreach (GamePlayer gp in UnityEngine.Object.FindObjectsOfType<GamePlayer>())
+                {
+                    if (gp != null) gp.PartyPickCursor = null;
+                }
+                UnityEngine.Object.Destroy(_replayPartyBox.gameObject);
+                _replayPartyBox = null;
+                _boxCurrentlyShown = false;
+                Plugin.Logger.LogInfo("[ReplayLaunch:Stop] Destroyed replay party box");
+            }
+            _pickCursorMap.Clear();
+            _pickCursorLastVisible.Clear();
+
+            if (_zoomCamera != null)
+            {
+                foreach (var cursor in _cursorMap.Values)
+                {
+                    if (cursor != null) _zoomCamera.RemoveTarget(cursor);
+                }
+            }
+            _cursorMap.Clear();
+            _cursorLastVisible.Clear();
+            _zoomCamera = null;
+
             Plugin.Logger.LogInfo("[ReplayLaunch:Stop] === PLAYBACK STOPPED ===");
         }
 
         public void Seek(float time)
         {
             CurrentTime = Mathf.Clamp(time, 0f, Duration);
+
+            // Reset phase tracking to match the seek target. Walk phase events from the
+            // start to find the most recent one at or before CurrentTime.
+            _nextPhaseEventIdx = 0;
+            CurrentRecordedPhase = GameControl.GamePhase.NONE;
+            if (_recording?.PhaseEvents != null)
+            {
+                for (int i = 0; i < _recording.PhaseEvents.Count; i++)
+                {
+                    if (_recording.PhaseEvents[i].Time > CurrentTime) break;
+                    if (System.Enum.TryParse(_recording.PhaseEvents[i].Phase,
+                            out GameControl.GamePhase p))
+                        CurrentRecordedPhase = p;
+                    _nextPhaseEventIdx = i + 1;
+                }
+            }
 
             _nextSoundIndex = 0;
             if (_recording?.SoundEvents != null)
@@ -777,6 +965,26 @@ namespace UCHCameraMod
                     _nextSoundIndex = i + 1;
                 }
             }
+
+            _nextBoxEventIdx = 0;
+            _boxCurrentlyShown = false;
+            if (_recording?.PartyBoxEvents != null)
+            {
+                for (int i = 0; i < _recording.PartyBoxEvents.Count; i++)
+                {
+                    if (_recording.PartyBoxEvents[i].Time > CurrentTime) break;
+                    _boxCurrentlyShown = _recording.PartyBoxEvents[i].Opened;
+                    _nextBoxEventIdx = i + 1;
+                }
+            }
+
+            foreach (var p in _heldPieces.Values) if (p != null) UnityEngine.Object.Destroy(p.gameObject);
+            foreach (var p in _placedPieces.Values) if (p != null) UnityEngine.Object.Destroy(p.gameObject);
+            _heldPieces.Clear();
+            _placedPieces.Clear();
+            _nextPickupEventIdx = 0;
+            _nextPlacedEventIdx = 0;
+            _nextDestroyedEventIdx = 0;
 
             ApplyFrame(CurrentTime);
         }
@@ -798,7 +1006,197 @@ namespace UCHCameraMod
         {
             if (!IsPlaying || _recording == null) return;
             ProcessSoundEvents();
+            UpdateCurrentRecordedPhase();
+            UpdatePartyBoxEvents();
+            UpdateItemEvents();
             ApplyFrame(CurrentTime);
+        }
+
+        private void UpdateCurrentRecordedPhase()
+        {
+            if (_recording?.PhaseEvents == null) return;
+
+            while (_nextPhaseEventIdx < _recording.PhaseEvents.Count
+                && _recording.PhaseEvents[_nextPhaseEventIdx].Time <= CurrentTime)
+            {
+                var ev = _recording.PhaseEvents[_nextPhaseEventIdx];
+                if (System.Enum.TryParse(ev.Phase, out GameControl.GamePhase newPhase))
+                {
+                    if (newPhase != CurrentRecordedPhase)
+                    {
+                        Plugin.Logger.LogInfo(
+                            $"[Playback:Phase] t={CurrentTime:F2} {CurrentRecordedPhase} -> {newPhase}");
+                        var oldPhase = CurrentRecordedPhase;
+                        CurrentRecordedPhase = newPhase;
+                        ApplyCameraPhaseTransition(oldPhase, newPhase);
+                    }
+                }
+                _nextPhaseEventIdx++;
+            }
+        }
+
+        private void UpdatePartyBoxEvents()
+        {
+            if (_replayPartyBox == null || _recording?.PartyBoxEvents == null) return;
+
+            while (_nextBoxEventIdx < _recording.PartyBoxEvents.Count)
+            {
+                var evt = _recording.PartyBoxEvents[_nextBoxEventIdx];
+                if (evt.Time > CurrentTime) break;
+
+                if (evt.Opened)
+                {
+                    _replayPartyBox.ShowBox(evt.IsExtraBox);
+                    _boxCurrentlyShown = true;
+                    Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> opened");
+                }
+                else
+                {
+                    _replayPartyBox.Hide(false);
+                    _boxCurrentlyShown = false;
+                    Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> closed");
+                }
+
+                _nextBoxEventIdx++;
+            }
+        }
+
+        private void UpdateItemEvents()
+        {
+            if (_recording == null) return;
+
+            while (_nextPickupEventIdx < _recording.ItemPickupEvents.Count)
+            {
+                var evt = _recording.ItemPickupEvents[_nextPickupEventIdx];
+                if (evt.Time > CurrentTime) break;
+                ApplyItemPickup(evt);
+                _nextPickupEventIdx++;
+            }
+
+            while (_nextPlacedEventIdx < _recording.ItemPlacedEvents.Count)
+            {
+                var evt = _recording.ItemPlacedEvents[_nextPlacedEventIdx];
+                if (evt.Time > CurrentTime) break;
+                ApplyItemPlaced(evt);
+                _nextPlacedEventIdx++;
+            }
+
+            while (_nextDestroyedEventIdx < _recording.ItemDestroyedEvents.Count)
+            {
+                var evt = _recording.ItemDestroyedEvents[_nextDestroyedEventIdx];
+                if (evt.Time > CurrentTime) break;
+                ApplyItemDestroyed(evt);
+                _nextDestroyedEventIdx++;
+            }
+        }
+
+        private void ApplyItemPickup(ItemPickupEvent evt)
+        {
+            var metaList = LobbyManager.instance?.CurrentGameController?.MetaList;
+            if (metaList == null)
+            {
+                Plugin.Logger.LogWarning($"[Playback:Item] MetaList not available for piece={evt.PieceID}");
+                return;
+            }
+
+            var prefab = metaList.GetPlaceableByIndex(evt.BlockIndex);
+            if (prefab == null)
+            {
+                Plugin.Logger.LogWarning($"[Playback:Item] No prefab for blockIndex={evt.BlockIndex}");
+                return;
+            }
+
+            var piece = UnityEngine.Object.Instantiate(prefab);
+            piece.ID = evt.PieceID;
+
+            var rb = piece.GetComponent<Rigidbody2D>();
+            if (rb != null) rb.isKinematic = true;
+
+            foreach (var sr in piece.GetComponentsInChildren<SpriteRenderer>())
+                sr.sortingLayerName = "UI 1";
+
+            _heldPieces[evt.PieceID] = piece;
+            Plugin.Logger.LogInfo($"[Playback:Item] t={CurrentTime:F2} pickup piece={evt.PieceID} block={evt.BlockIndex}");
+        }
+
+        private void ApplyItemPlaced(ItemPlacedEvent evt)
+        {
+            if (!_heldPieces.TryGetValue(evt.PieceID, out Placeable piece) || piece == null)
+            {
+                Plugin.Logger.LogWarning($"[Playback:Item] Placed event for unknown piece={evt.PieceID}");
+                return;
+            }
+
+            piece.transform.position = new Vector3(evt.PosX, evt.PosY, piece.transform.position.z);
+            piece.transform.rotation = Quaternion.Euler(0f, 0f, evt.RotZ);
+            piece.transform.localScale = new Vector3(evt.ScaleX, evt.ScaleY, piece.transform.localScale.z);
+
+            foreach (var sr in piece.GetComponentsInChildren<SpriteRenderer>())
+                sr.sortingLayerName = "Default";
+
+            piece.gameObject.layer = 9;
+
+            _heldPieces.Remove(evt.PieceID);
+            _placedPieces[evt.PieceID] = piece;
+            Plugin.Logger.LogInfo($"[Playback:Item] t={CurrentTime:F2} placed piece={evt.PieceID}");
+        }
+
+        private void ApplyItemDestroyed(ItemDestroyedEvent evt)
+        {
+            Placeable piece = null;
+            if (_heldPieces.TryGetValue(evt.PieceID, out piece))
+                _heldPieces.Remove(evt.PieceID);
+            else if (_placedPieces.TryGetValue(evt.PieceID, out piece))
+                _placedPieces.Remove(evt.PieceID);
+
+            if (piece != null)
+            {
+                UnityEngine.Object.Destroy(piece.gameObject);
+                Plugin.Logger.LogInfo($"[Playback:Item] t={CurrentTime:F2} destroyed piece={evt.PieceID}");
+            }
+        }
+
+        private void SetCameraPhase(GameControl.GamePhase phase)
+        {
+            if (_zoomCamera == null || _zoomCameraPhaseField == null) return;
+            _zoomCameraPhaseField.SetValue(_zoomCamera, phase);
+        }
+
+        private void ApplyCameraPhaseTransition(GameControl.GamePhase oldPhase, GameControl.GamePhase newPhase)
+        {
+            if (_zoomCamera == null) return;
+
+            bool wasPlaceLike = oldPhase == GameControl.GamePhase.PLACE;
+            bool isPlaceLike  = newPhase == GameControl.GamePhase.PLACE;
+
+            if (isPlaceLike && !wasPlaceLike)
+            {
+                foreach (var cursor in _cursorMap.Values)
+                {
+                    if (cursor != null) _zoomCamera.AddTarget(cursor);
+                }
+                _zoomCamera.unitBuffer = false;
+                _zoomCamera.UseDeadZone = true;
+                SetCameraPhase(GameControl.GamePhase.PLACE);
+                Plugin.Logger.LogInfo(
+                    $"[Playback:Camera] -> PLACE framing ({_cursorMap.Count} cursor targets added)");
+            }
+            else if (!isPlaceLike && wasPlaceLike)
+            {
+                foreach (var cursor in _cursorMap.Values)
+                {
+                    if (cursor != null) _zoomCamera.RemoveTarget(cursor);
+                }
+                _zoomCamera.unitBuffer = true;
+                _zoomCamera.UseDeadZone = false;
+                SetCameraPhase(newPhase);
+                Plugin.Logger.LogInfo(
+                    $"[Playback:Camera] -> {newPhase} framing (cursor targets removed)");
+            }
+            else
+            {
+                SetCameraPhase(newPhase);
+            }
         }
 
         private void ProcessSoundEvents()
@@ -862,6 +1260,9 @@ namespace UCHCameraMod
             if (frameA == frameB || frames[frameB].Time <= time)
             {
                 ApplySnapshotsDirectly(frames[frameA]);
+                ApplyCursorSnapshots(frames[frameA]);
+                ApplyPickCursorSnapshots(frames[frameA]);
+                ApplyItemStateSnapshots(frames[frameA]);
                 return;
             }
 
@@ -870,6 +1271,85 @@ namespace UCHCameraMod
             float t = (time - frameATime) / (frameBTime - frameATime);
 
             ApplySnapshotsInterpolated(frames[frameA], frames[frameB], t);
+            ApplyCursorSnapshots(frames[frameA]);
+            ApplyPickCursorSnapshots(frames[frameA]);
+            ApplyItemStateSnapshots(frames[frameA]);
+        }
+
+        private void ApplyCursorSnapshots(RecordingFrame frame)
+        {
+            if (frame.Cursors == null) return;
+
+            for (int i = 0; i < frame.Cursors.Count; i++)
+            {
+                var snap = frame.Cursors[i];
+                if (!_cursorMap.TryGetValue(snap.NetworkNumber, out Cursor cursor)) continue;
+                if (cursor == null) continue;
+
+                bool lastVisible = _cursorLastVisible.TryGetValue(snap.NetworkNumber, out bool lv) && lv;
+
+                if (snap.Visible && !lastVisible)
+                {
+                    cursor.Enable();
+                    _cursorLastVisible[snap.NetworkNumber] = true;
+                    Plugin.Logger.LogInfo($"[Playback:Cursor] t={CurrentTime:F2} netNum={snap.NetworkNumber} -> visible");
+                }
+                else if (!snap.Visible && lastVisible)
+                {
+                    cursor.Disable(false, false);
+                    _cursorLastVisible[snap.NetworkNumber] = false;
+                    Plugin.Logger.LogInfo($"[Playback:Cursor] t={CurrentTime:F2} netNum={snap.NetworkNumber} -> hidden");
+                }
+
+                if (snap.Visible)
+                {
+                    cursor.transform.position = new Vector3(snap.PosX, snap.PosY, cursor.transform.position.z);
+                }
+            }
+        }
+
+        private void ApplyPickCursorSnapshots(RecordingFrame frame)
+        {
+            if (frame.PickCursors == null) return;
+
+            for (int i = 0; i < frame.PickCursors.Count; i++)
+            {
+                var snap = frame.PickCursors[i];
+                if (!_pickCursorMap.TryGetValue(snap.NetworkNumber, out PartyPickCursor cursor)) continue;
+                if (cursor == null) continue;
+
+                bool lastVisible = _pickCursorLastVisible.TryGetValue(snap.NetworkNumber, out bool lv) && lv;
+
+                if (snap.Visible && !lastVisible)
+                {
+                    cursor.Enable();
+                    _pickCursorLastVisible[snap.NetworkNumber] = true;
+                }
+                else if (!snap.Visible && lastVisible)
+                {
+                    cursor.Disable(false, false);
+                    _pickCursorLastVisible[snap.NetworkNumber] = false;
+                }
+
+                if (snap.Visible)
+                {
+                    cursor.transform.position = new Vector3(snap.PosX, snap.PosY, cursor.transform.position.z);
+                }
+            }
+        }
+
+        private void ApplyItemStateSnapshots(RecordingFrame frame)
+        {
+            if (frame.ItemStates == null) return;
+            foreach (var state in frame.ItemStates)
+            {
+                if (_heldPieces.TryGetValue(state.PieceID, out Placeable piece) && piece != null)
+                {
+                    piece.transform.position = new Vector3(state.PosX, state.PosY, piece.transform.position.z);
+                    piece.transform.rotation = Quaternion.Euler(0f, 0f, state.RotZ);
+                    piece.transform.localScale = new Vector3(state.ScaleX, state.ScaleY, piece.transform.localScale.z);
+                }
+            }
         }
 
         private void ApplySnapshotsDirectly(RecordingFrame frame)

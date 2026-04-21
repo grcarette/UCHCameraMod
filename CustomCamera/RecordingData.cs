@@ -9,7 +9,7 @@ namespace UCHCameraMod
         public string Date;
         public string StageCode;
         public string SceneName;
-        public string GameMode;
+        public string GameMode = "FreePlayControl";
         public List<PlayerInfo> Players = new List<PlayerInfo>();
     }
 
@@ -62,6 +62,11 @@ namespace UCHCameraMod
         public byte[] SnapshotBytes;      // compressed QuickSaver XML snapshot
         public List<RecordingFrame> Frames = new List<RecordingFrame>();
         public List<SoundEvent> SoundEvents = new List<SoundEvent>();
+        public List<PhaseEvent> PhaseEvents = new List<PhaseEvent>();
+        public List<PartyBoxVisibilityEvent> PartyBoxEvents = new List<PartyBoxVisibilityEvent>();
+        public List<ItemPickupEvent> ItemPickupEvents = new List<ItemPickupEvent>();
+        public List<ItemPlacedEvent> ItemPlacedEvents = new List<ItemPlacedEvent>();
+        public List<ItemDestroyedEvent> ItemDestroyedEvents = new List<ItemDestroyedEvent>();
     }
 
     [Serializable]
@@ -69,6 +74,58 @@ namespace UCHCameraMod
     {
         public float Time;                // seconds since recording started
         public List<CharacterSnapshot> Characters = new List<CharacterSnapshot>();
+        public List<CursorSnapshot> Cursors = new List<CursorSnapshot>();
+        public List<PickCursorSnapshot> PickCursors = new List<PickCursorSnapshot>();
+        public List<ItemStateSnapshot> ItemStates = new List<ItemStateSnapshot>();
+    }
+
+    [Serializable]
+    public class ItemPickupEvent
+    {
+        public float Time;
+        public int CursorNetNum;
+        public int BlockIndex;
+        public int PieceID;
+    }
+
+    [Serializable]
+    public class ItemPlacedEvent
+    {
+        public float Time;
+        public int PieceID;
+        public float PosX, PosY, RotZ, ScaleX, ScaleY;
+    }
+
+    [Serializable]
+    public class ItemDestroyedEvent
+    {
+        public float Time;
+        public int PieceID;
+    }
+
+    [Serializable]
+    public class ItemStateSnapshot
+    {
+        public int PieceID;
+        public float PosX, PosY, RotZ, ScaleX, ScaleY;
+    }
+
+    [Serializable]
+    public class CursorSnapshot
+    {
+        public int NetworkNumber;
+        public float PosX;
+        public float PosY;
+        public bool Visible;
+    }
+
+    [Serializable]
+    public class PickCursorSnapshot
+    {
+        public int NetworkNumber;
+        public float PosX;
+        public float PosY;
+        public bool Visible;
     }
 
     [Serializable]
@@ -79,6 +136,21 @@ namespace UCHCameraMod
         public string EventName;
         public bool IsZombie;
         public bool IsGhost;
+    }
+
+    [Serializable]
+    public class PhaseEvent
+    {
+        public float Time;
+        public string Phase;   // stringified GameControl.GamePhase
+    }
+
+    [Serializable]
+    public class PartyBoxVisibilityEvent
+    {
+        public float Time;
+        public bool Opened;
+        public bool IsExtraBox;
     }
 
     [Serializable]

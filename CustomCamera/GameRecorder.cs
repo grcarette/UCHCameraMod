@@ -1,9 +1,10 @@
 using System.Collections.Generic;
+using GameEvent;
 using UnityEngine;
 
 namespace UCHCameraMod
 {
-    public class GameRecorder : MonoBehaviour
+    public class GameRecorder : MonoBehaviour, IGameEventListener
     {
         public static GameRecorder Instance { get; private set; }
 
@@ -25,18 +26,79 @@ namespace UCHCameraMod
             public string LastClipName;
         }
 
+        private struct TrackedCursor
+        {
+            public Cursor Cursor;
+            public int NetworkNumber;
+            public Transform Transform;
+        }
+
+        private struct TrackedPickCursor
+        {
+            public PartyPickCursor Cursor;
+            public int NetworkNumber;
+            public Transform Transform;
+        }
+
         private List<TrackedCharacter> _tracked = new List<TrackedCharacter>();
+        private List<TrackedCursor> _trackedCursors = new List<TrackedCursor>();
+        private List<TrackedPickCursor> _trackedPickCursors = new List<TrackedPickCursor>();
         private Dictionary<int, int> _scores = new Dictionary<int, int>();
+        private Dictionary<int, int> _cursorLastHeldPieceID = new Dictionary<int, int>();
+        private GameControl _gameControl;
+        private GameControl.GamePhase _lastCapturedPhase = (GameControl.GamePhase)(-1);
+        private PartyBox _trackedBox;
+        private bool _lastBoxVisible;
 
         private void Awake()
         {
             Instance = this;
         }
 
+        public void handleEvent(GameEvent.GameEvent e)
+        {
+            if (!IsRecording || CurrentRecording == null) return;
+
+            if (e is PiecePlacedEvent placedEvt && placedEvt.PlacedBlock != null)
+            {
+                float elapsed = Time.realtimeSinceStartup - _startTime;
+                CurrentRecording.ItemPlacedEvents.Add(new ItemPlacedEvent
+                {
+                    Time = elapsed,
+                    PieceID = placedEvt.PlacedBlock.ID,
+                    PosX = placedEvt.PlacedBlock.transform.position.x,
+                    PosY = placedEvt.PlacedBlock.transform.position.y,
+                    RotZ = placedEvt.PlacedBlock.transform.rotation.eulerAngles.z,
+                    ScaleX = placedEvt.PlacedBlock.transform.localScale.x,
+                    ScaleY = placedEvt.PlacedBlock.transform.localScale.y
+                });
+                Plugin.Logger.LogInfo($"[Recorder:Item] t={elapsed:F2} placed piece={placedEvt.PlacedBlock.ID} via PiecePlacedEvent");
+            }
+        }
+
+        public void RecordItemDestroyed(int pieceID)
+        {
+            if (!IsRecording || CurrentRecording == null) return;
+
+            float elapsed = Time.realtimeSinceStartup - _startTime;
+            foreach (var ev in CurrentRecording.ItemDestroyedEvents)
+            {
+                if (ev.PieceID == pieceID && Mathf.Abs(ev.Time - elapsed) < 0.01f) return;
+            }
+
+            CurrentRecording.ItemDestroyedEvents.Add(new ItemDestroyedEvent
+            {
+                Time = elapsed,
+                PieceID = pieceID
+            });
+            Plugin.Logger.LogInfo($"[Recorder:Item] t={elapsed:F2} destroyed piece={pieceID}");
+        }
+
         public void StartRecording()
         {
             _tracked.Clear();
             _scores.Clear();
+            _cursorLastHeldPieceID.Clear();
 
             // Build a lookup from Character -> networkNumber once
             var charToNumber = new Dictionary<Character, int>();
@@ -81,12 +143,12 @@ namespace UCHCameraMod
 
             try
             {
-                var gc = FindObjectOfType<GameControl>();
-                if (gc != null)
+                _gameControl = FindObjectOfType<GameControl>();
+                if (_gameControl != null)
                 {
-                    meta.GameMode = gc.GetType().Name;
-                    if (!string.IsNullOrEmpty(gc.AssociatedScene))
-                        meta.SceneName = gc.AssociatedScene;
+                    meta.GameMode = _gameControl.GetType().Name;
+                    if (!string.IsNullOrEmpty(_gameControl.AssociatedScene))
+                        meta.SceneName = _gameControl.AssociatedScene;
                     else
                         meta.SceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
                 }
@@ -97,6 +159,42 @@ namespace UCHCameraMod
                 }
             }
             catch { meta.GameMode = "unknown"; meta.SceneName = "unknown"; }
+
+            _lastCapturedPhase = (GameControl.GamePhase)(-1);
+
+            _trackedBox = null;
+            if (_gameControl is VersusControl vc && vc.PartyBox != null)
+            {
+                _trackedBox = vc.PartyBox;
+                _lastBoxVisible = _trackedBox.Visible;
+                Plugin.Logger.LogInfo($"[Recorder] Tracking PartyBox (initialVisible={_lastBoxVisible})");
+            }
+
+            _trackedCursors.Clear();
+            foreach (GamePlayer gp in FindObjectsOfType<GamePlayer>())
+            {
+                if (gp == null || gp.CursorInstance == null) continue;
+                _trackedCursors.Add(new TrackedCursor
+                {
+                    Cursor = gp.CursorInstance,
+                    NetworkNumber = gp.networkNumber,
+                    Transform = gp.CursorInstance.transform
+                });
+            }
+            Plugin.Logger.LogInfo($"[Recorder] Tracking {_trackedCursors.Count} cursor(s)");
+
+            _trackedPickCursors.Clear();
+            foreach (GamePlayer gp in FindObjectsOfType<GamePlayer>())
+            {
+                if (gp == null || gp.PartyPickCursor == null) continue;
+                _trackedPickCursors.Add(new TrackedPickCursor
+                {
+                    Cursor = gp.PartyPickCursor,
+                    NetworkNumber = gp.networkNumber,
+                    Transform = gp.PartyPickCursor.transform
+                });
+            }
+            Plugin.Logger.LogInfo($"[Recorder] Tracking {_trackedPickCursors.Count} pick cursor(s)");
 
             foreach (GamePlayer gp in FindObjectsOfType<GamePlayer>())
             {
@@ -146,6 +244,8 @@ namespace UCHCameraMod
                 Plugin.Logger.LogError($"[Recorder] Failed to capture snapshot: {ex.Message}");
             }
 
+            GameEventManager.ChangeListener<PiecePlacedEvent>(this, true);
+
             _startTime = Time.realtimeSinceStartup;
             IsRecording = true;
         }
@@ -179,6 +279,7 @@ namespace UCHCameraMod
         {
             if (!IsRecording) return;
             IsRecording = false;
+            GameEventManager.ChangeListener<PiecePlacedEvent>(this, false);
             CurrentRecording.Duration = Time.realtimeSinceStartup - _startTime;
 
             foreach (var pi in CurrentRecording.Metadata.Players)
@@ -294,7 +395,38 @@ namespace UCHCameraMod
         private void FixedUpdate()
         {
             if (!IsRecording) return;
-            CaptureFrame(Time.realtimeSinceStartup - _startTime);
+            float elapsed = Time.realtimeSinceStartup - _startTime;
+
+            if (_gameControl != null && _gameControl.Phase != _lastCapturedPhase)
+            {
+                CurrentRecording.PhaseEvents.Add(new PhaseEvent
+                {
+                    Time = elapsed,
+                    Phase = _gameControl.Phase.ToString()
+                });
+                Plugin.Logger.LogInfo(
+                    $"[Recorder:Phase] t={elapsed:F2} phase={_gameControl.Phase}");
+                _lastCapturedPhase = _gameControl.Phase;
+            }
+
+            if (_trackedBox != null)
+            {
+                bool currentVisible = _trackedBox.Visible;
+                if (currentVisible != _lastBoxVisible)
+                {
+                    CurrentRecording.PartyBoxEvents.Add(new PartyBoxVisibilityEvent
+                    {
+                        Time = elapsed,
+                        Opened = currentVisible,
+                        IsExtraBox = false
+                    });
+                    Plugin.Logger.LogInfo(
+                        $"[Recorder:Box] t={elapsed:F2} -> {(currentVisible ? "opened" : "closed")}");
+                    _lastBoxVisible = currentVisible;
+                }
+            }
+
+            CaptureFrame(elapsed);
         }
 
         private void CaptureFrame(float elapsed)
@@ -343,6 +475,76 @@ namespace UCHCameraMod
                 }
 
                 frame.Characters.Add(snap);
+            }
+
+            frame.Cursors = new List<CursorSnapshot>(_trackedCursors.Count);
+            for (int i = 0; i < _trackedCursors.Count; i++)
+            {
+                var tc = _trackedCursors[i];
+                if (tc.Cursor == null) continue;
+                frame.Cursors.Add(new CursorSnapshot
+                {
+                    NetworkNumber = tc.NetworkNumber,
+                    PosX = tc.Transform.position.x,
+                    PosY = tc.Transform.position.y,
+                    Visible = tc.Cursor.Enabled
+                });
+            }
+
+            frame.PickCursors = new List<PickCursorSnapshot>(_trackedPickCursors.Count);
+            for (int i = 0; i < _trackedPickCursors.Count; i++)
+            {
+                var c = _trackedPickCursors[i];
+                if (c.Cursor == null) continue;
+                frame.PickCursors.Add(new PickCursorSnapshot
+                {
+                    NetworkNumber = c.NetworkNumber,
+                    PosX = c.Transform.position.x,
+                    PosY = c.Transform.position.y,
+                    Visible = c.Cursor.Enabled
+                });
+            }
+
+            foreach (var tc in _trackedCursors)
+            {
+                if (tc.Cursor == null) continue;
+                var ppc = tc.Cursor as PiecePlacementCursor;
+                if (ppc == null) continue;
+
+                int lastID = _cursorLastHeldPieceID.TryGetValue(tc.NetworkNumber, out int li) ? li : 0;
+                int currentID = ppc.Piece != null ? ppc.Piece.ID : 0;
+
+                if (currentID != lastID)
+                {
+                    if (currentID != 0)
+                    {
+                        int blockIdx = PlaceableMetadataList.Instance != null
+                            ? PlaceableMetadataList.Instance.GetIndexForPlaceable(ppc.Piece.Name)
+                            : -1;
+                        CurrentRecording.ItemPickupEvents.Add(new ItemPickupEvent
+                        {
+                            Time = elapsed,
+                            CursorNetNum = tc.NetworkNumber,
+                            BlockIndex = blockIdx,
+                            PieceID = currentID
+                        });
+                        Plugin.Logger.LogInfo($"[Recorder:Item] t={elapsed:F2} pickup cursor={tc.NetworkNumber} piece={currentID} block={blockIdx}");
+                    }
+                    _cursorLastHeldPieceID[tc.NetworkNumber] = currentID;
+                }
+
+                if (currentID != 0 && ppc.Piece != null)
+                {
+                    frame.ItemStates.Add(new ItemStateSnapshot
+                    {
+                        PieceID = currentID,
+                        PosX = ppc.Piece.transform.position.x,
+                        PosY = ppc.Piece.transform.position.y,
+                        RotZ = ppc.Piece.transform.rotation.eulerAngles.z,
+                        ScaleX = ppc.Piece.transform.localScale.x,
+                        ScaleY = ppc.Piece.transform.localScale.y
+                    });
+                }
             }
 
             CurrentRecording.Frames.Add(frame);

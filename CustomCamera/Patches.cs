@@ -195,4 +195,33 @@ namespace UCHCameraMod
             GameRecorder.Instance?.OnPlayerScored(pb.playerNumber);
         }
     }
+
+    [HarmonyPatch(typeof(Placeable), "DestroySelf")]
+    internal static class PlaceableDestroyPatch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(Placeable __instance)
+        {
+            if (GameRecorder.Instance == null || !GameRecorder.Instance.IsRecording) return;
+            if (__instance == null || __instance.ID == 0) return;
+            GameRecorder.Instance.RecordItemDestroyed(__instance.ID);
+        }
+    }
+
+    [HarmonyPatch(typeof(VersusControl), "Start")]
+    internal static class VersusControlStartPatch
+    {
+        public static PartyBox CachedPartyBoxPrefab;
+
+        [HarmonyPostfix]
+        public static void Postfix(VersusControl __instance)
+        {
+            if (__instance.PartyBoxPrefab != null && CachedPartyBoxPrefab == null)
+            {
+                CachedPartyBoxPrefab = __instance.PartyBoxPrefab;
+                Plugin.Logger.LogInfo(
+                    $"[PrefabCache] PartyBoxPrefab cached: {CachedPartyBoxPrefab.name}");
+            }
+        }
+    }
 }
