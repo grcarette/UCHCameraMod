@@ -1,6 +1,9 @@
 using HarmonyLib;
 using UnityEngine;
 using System;
+using System.Collections.Generic;
+using System.Reflection;
+using GameEvent;
 
 namespace UCHCameraMod
 {
@@ -208,6 +211,24 @@ namespace UCHCameraMod
         }
     }
 
+    [HarmonyPatch(typeof(PartyBox), "ChoosePieces")]
+    internal static class RecordBoxItemPositionsPatch
+    {
+        private static readonly FieldInfo PiecesField =
+            typeof(PartyBox).GetField("pieces", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        [HarmonyPostfix]
+        public static void Postfix(PartyBox __instance)
+        {
+            if (GameRecorder.Instance == null || !GameRecorder.Instance.IsRecording) return;
+
+            var pieces = PiecesField?.GetValue(__instance) as List<PickableBlock>;
+            if (pieces == null) return;
+
+            GameRecorder.Instance.RecordBoxContents(__instance, pieces);
+        }
+    }
+
     [HarmonyPatch(typeof(VersusControl), "Start")]
     internal static class VersusControlStartPatch
     {
@@ -224,4 +245,104 @@ namespace UCHCameraMod
             }
         }
     }
+
+    // ── Cursor diagnostics ──────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Cursor), "Enable")]
+    internal static class DiagCursorEnablePatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Cursor __instance)
+        {
+            if (GamePlaybackController.Instance == null ||
+                !GamePlaybackController.Instance.IsPlaying) return;
+            if (!__instance.hasAuthority) return;
+            Plugin.Logger.LogInfo(
+                $"[Diag:Cursor] Enable called during replay, " +
+                $"type={__instance.GetType().Name}, " +
+                $"netNum={__instance.networkNumber}, " +
+                $"caller={new System.Diagnostics.StackTrace(1, false).GetFrame(0).GetMethod().Name}");
+        }
+    }
+
+    [HarmonyPatch(typeof(Cursor), "Disable")]
+    internal static class DiagCursorDisablePatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Cursor __instance)
+        {
+            if (GamePlaybackController.Instance == null ||
+                !GamePlaybackController.Instance.IsPlaying) return;
+            if (!__instance.hasAuthority) return;
+            Plugin.Logger.LogInfo(
+                $"[Diag:Cursor] Disable called during replay, " +
+                $"type={__instance.GetType().Name}, " +
+                $"netNum={__instance.networkNumber}");
+        }
+    }
+
+    [HarmonyPatch(typeof(PiecePlacementCursor), "Update")]
+    internal static class DiagCursorUpdatePatch
+    {
+        private static float _lastLog;
+
+        [HarmonyPostfix]
+        public static void Postfix(PiecePlacementCursor __instance)
+        {
+            if (GamePlaybackController.Instance == null ||
+                !GamePlaybackController.Instance.IsPlaying) return;
+            if (!__instance.hasAuthority) return;
+
+            if (Time.time - _lastLog >= 1f)
+            {
+                _lastLog = Time.time;
+                Plugin.Logger.LogInfo(
+                    $"[Diag:Cursor] PiecePlacementCursor.Update running on host cursor during replay, " +
+                    $"netNum={__instance.networkNumber}, " +
+                    $"enabled={__instance.Enabled}, " +
+                    $"piece={(__instance.Piece != null ? __instance.Piece.ID.ToString() : "null")}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(PartyPickCursor), "Update")]
+    internal static class DiagPartyPickCursorUpdatePatch
+    {
+        private static float _lastLog;
+
+        [HarmonyPostfix]
+        public static void Postfix(PartyPickCursor __instance)
+        {
+            if (GamePlaybackController.Instance == null ||
+                !GamePlaybackController.Instance.IsPlaying) return;
+            if (!__instance.hasAuthority) return;
+
+            if (Time.time - _lastLog >= 1f)
+            {
+                _lastLog = Time.time;
+                Plugin.Logger.LogInfo(
+                    $"[Diag:Cursor] PartyPickCursor.Update running on host cursor during replay, " +
+                    $"netNum={__instance.networkNumber}, " +
+                    $"enabled={__instance.Enabled}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(PiecePlacementCursor), "ReceiveEvent")]
+    internal static class DiagCursorReceiveEventPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(PiecePlacementCursor __instance, GameEvent.GameEvent e)
+        {
+            if (GamePlaybackController.Instance == null ||
+                !GamePlaybackController.Instance.IsPlaying) return;
+            if (!__instance.hasAuthority) return;
+
+            Plugin.Logger.LogInfo(
+                $"[Diag:Cursor] ReceiveEvent during replay, " +
+                $"netNum={__instance.networkNumber}, " +
+                $"event={e?.GetType().Name ?? "null"}");
+        }
+    }
+
 }

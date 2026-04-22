@@ -50,6 +50,7 @@ namespace UCHCameraMod
         private readonly Dictionary<int, bool> _pickCursorLastVisible = new Dictionary<int, bool>();
         private PartyBox _replayPartyBox;
         private bool _boxCurrentlyShown;
+        private readonly List<PickableBlock> _boxItems = new List<PickableBlock>();
         private ZoomCamera _zoomCamera;
         private readonly Dictionary<int, Placeable> _heldPieces = new Dictionary<int, Placeable>();
         private readonly Dictionary<int, Placeable> _placedPieces = new Dictionary<int, Placeable>();
@@ -910,6 +911,7 @@ namespace UCHCameraMod
 
             if (_replayPartyBox != null)
             {
+                DestroyBoxItems();
                 foreach (GamePlayer gp in UnityEngine.Object.FindObjectsOfType<GamePlayer>())
                 {
                     if (gp != null) gp.PartyPickCursor = null;
@@ -966,6 +968,7 @@ namespace UCHCameraMod
                 }
             }
 
+            DestroyBoxItems();
             _nextBoxEventIdx = 0;
             _boxCurrentlyShown = false;
             if (_recording?.PartyBoxEvents != null)
@@ -1000,6 +1003,7 @@ namespace UCHCameraMod
                 CurrentTime = Duration;
                 Stop();
             }
+
         }
 
         private void LateUpdate()
@@ -1024,15 +1028,109 @@ namespace UCHCameraMod
                 {
                     if (newPhase != CurrentRecordedPhase)
                     {
-                        Plugin.Logger.LogInfo(
-                            $"[Playback:Phase] t={CurrentTime:F2} {CurrentRecordedPhase} -> {newPhase}");
                         var oldPhase = CurrentRecordedPhase;
+
+                        if (oldPhase != GameControl.GamePhase.NONE)
+                        {
+                            try
+                            {
+                                GameEventManager.SendEvent(new EndPhaseEvent(oldPhase));
+                                Plugin.Logger.LogInfo(
+                                    $"[Playback:Phase] t={CurrentTime:F2} EndPhaseEvent({oldPhase})");
+                            }
+                            catch (System.Exception ex)
+                            {
+                                Plugin.Logger.LogError(
+                                    $"[Playback:Phase] EndPhaseEvent({oldPhase}) threw: {ex.Message}\n{ex.StackTrace}");
+                            }
+                        }
+
+                        try
+                        {
+                            GameEventManager.SendEvent(new StartPhaseEvent(newPhase));
+                            Plugin.Logger.LogInfo(
+                                $"[Playback:Phase] t={CurrentTime:F2} StartPhaseEvent({newPhase})");
+                        }
+                        catch (System.Exception ex)
+                        {
+                            Plugin.Logger.LogError(
+                                $"[Playback:Phase] StartPhaseEvent({newPhase}) threw: {ex.Message}\n{ex.StackTrace}");
+                        }
+
+                        // The normal AfterAFixedUpdate flag chain that sets Active=true on ActiveBlocks
+                        // doesn't trigger during replay (Phase is already PLAY, so ToPlayMode doesn't
+                        // re-run). Force-activate after a delay matching Party/Challenge mode's ~1.5s
+                        // gap between StartPhaseEvent(PLAY) and ActiveBlock.Active becoming true.
+                        if (newPhase == GameControl.GamePhase.PLAY)
+                            StartCoroutine(DelayedForceActivate(PLAY_PHASE_ACTIVATION_DELAY));
+
                         CurrentRecordedPhase = newPhase;
                         ApplyCameraPhaseTransition(oldPhase, newPhase);
                     }
                 }
                 _nextPhaseEventIdx++;
             }
+        }
+
+        // Matches the activation delay observed in Party/Challenge mode (~1.5s between
+        // StartPhaseEvent(PLAY) firing and ActiveBlock.Active becoming true).
+        // Free Play doesn't have this delay, but our replay runtime is Free Play, so we
+        // need to reproduce it manually to keep character/item timing in sync with recording.
+        private const float PLAY_PHASE_ACTIVATION_DELAY = 1.5f;
+
+        private IEnumerator DelayedForceActivate(float delay)
+        {
+            Plugin.Logger.LogInfo(
+                $"[Playback:Phase] PLAY event fired, scheduling activation in {delay}s");
+            yield return new WaitForSeconds(delay);
+
+            if (!IsPlaying)
+            {
+                Plugin.Logger.LogInfo(
+                    "[Playback:Phase] Skipping delayed activation — playback stopped");
+                yield break;
+            }
+
+            if (CurrentRecordedPhase != GameControl.GamePhase.PLAY)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[Playback:Phase] Skipping delayed activation — phase changed to {CurrentRecordedPhase}");
+                yield break;
+            }
+
+            ForceActivateAllActiveBlocks();
+        }
+
+        private void ForceActivateAllActiveBlocks()
+        {
+            var gc = UnityEngine.Object.FindObjectOfType<GameControl>();
+            if (gc == null)
+            {
+                Plugin.Logger.LogWarning("[Playback:Phase] No GameControl found, cannot force-activate ActiveBlocks");
+                return;
+            }
+
+            var activeBlocksField = typeof(GameControl).GetField("activeBlocks",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var list = activeBlocksField?.GetValue(gc) as System.Collections.IList;
+            if (list == null)
+            {
+                Plugin.Logger.LogWarning("[Playback:Phase] Could not access activeBlocks list via reflection");
+                return;
+            }
+
+            int count = 0;
+            foreach (var obj in list)
+            {
+                var ab = obj as ActiveBlock;
+                if (ab == null) continue;
+                ab.Active = true;
+                count++;
+            }
+
+            Plugin.Logger.LogInfo(
+                $"[Playback:Phase] Force-activated {count} ActiveBlock(s) for PLAY " +
+                $"(after {PLAY_PHASE_ACTIVATION_DELAY}s delay)");
         }
 
         private void UpdatePartyBoxEvents()
@@ -1048,17 +1146,125 @@ namespace UCHCameraMod
                 {
                     _replayPartyBox.ShowBox(evt.IsExtraBox);
                     _boxCurrentlyShown = true;
-                    Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> opened");
+                    SpawnBoxItems(evt.Items);
+                    Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> opened with {evt.Items.Count} item(s)");
                 }
                 else
                 {
                     _replayPartyBox.Hide(false);
                     _boxCurrentlyShown = false;
+                    DestroyBoxItems();
                     Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> closed");
                 }
 
                 _nextBoxEventIdx++;
             }
+        }
+
+        private void SpawnBoxItems(List<BoxItemSnapshot> items)
+        {
+            if (_replayPartyBox == null || items == null || items.Count == 0) return;
+
+            var metaList = LobbyManager.instance?.CurrentGameController?.MetaList;
+            if (metaList == null) return;
+
+            var forceBlocks = new List<Placeable>();
+            foreach (var snap in items)
+            {
+                var placeable = metaList.GetPlaceableByIndex(snap.BlockIndex);
+                if (placeable != null)
+                    forceBlocks.Add(placeable);
+                else
+                    Plugin.Logger.LogWarning($"[Playback:Box] Could not find Placeable for BlockIndex={snap.BlockIndex}");
+            }
+
+            if (forceBlocks.Count == 0)
+            {
+                Plugin.Logger.LogWarning("[Playback:Box] No valid blocks to spawn in box");
+                return;
+            }
+
+            try
+            {
+                _replayPartyBox.ChoosePieces(forceBlocks.Count, forceBlocks);
+                Plugin.Logger.LogInfo($"[Playback:Box] Populated box with {forceBlocks.Count} item(s) via ChoosePieces");
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogError($"[Playback:Box] ChoosePieces failed: {ex.Message}\n{ex.StackTrace}");
+                return;
+            }
+
+            ApplyRecordedBoxPositions(_replayPartyBox, items);
+
+            _boxItems.Clear();
+            foreach (var p in _replayPartyBox.GetComponentsInChildren<PickableBlock>())
+            {
+                if (p != null && p.InPartybox) _boxItems.Add(p);
+            }
+        }
+
+        private static readonly System.Reflection.FieldInfo _partyBoxPiecesField =
+            typeof(PartyBox).GetField("pieces",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        private void ApplyRecordedBoxPositions(PartyBox box, List<BoxItemSnapshot> recordedItems)
+        {
+            bool anyHasPosition = false;
+            foreach (var item in recordedItems)
+            {
+                if (item.LocalX != 0f || item.LocalY != 0f) { anyHasPosition = true; break; }
+            }
+            if (!anyHasPosition)
+            {
+                Plugin.Logger.LogInfo(
+                    "[Playback:Box] Recording has no item positions; using ChoosePieces randomization");
+                return;
+            }
+
+            var pieces = _partyBoxPiecesField?.GetValue(box) as List<PickableBlock>;
+            if (pieces == null)
+            {
+                Plugin.Logger.LogWarning("[Playback:Box] Could not access PartyBox.pieces list");
+                return;
+            }
+
+            var metaList = LobbyManager.instance?.CurrentGameController?.MetaList;
+            var remaining = new List<BoxItemSnapshot>(recordedItems);
+            int applied = 0;
+
+            foreach (var piece in pieces)
+            {
+                if (piece == null) continue;
+                int pieceBlockIdx = metaList != null
+                    ? metaList.GetIndexForPlaceable(piece.placeablePrefab.Name)
+                    : -1;
+
+                for (int i = 0; i < remaining.Count; i++)
+                {
+                    if (remaining[i].BlockIndex != pieceBlockIdx) continue;
+                    var rec = remaining[i];
+                    piece.transform.localPosition = new Vector3(
+                        rec.LocalX, rec.LocalY, piece.transform.localPosition.z);
+                    piece.NetworkStartPosition = piece.transform.localPosition;
+                    remaining.RemoveAt(i);
+                    applied++;
+                    break;
+                }
+            }
+
+            Plugin.Logger.LogInfo(
+                $"[Playback:Box] Applied recorded positions to {applied}/{pieces.Count} item(s). " +
+                $"{remaining.Count} recorded position(s) unmatched.");
+        }
+
+        private void DestroyBoxItems()
+        {
+            foreach (var item in _boxItems)
+            {
+                if (item != null) UnityEngine.Object.Destroy(item.gameObject);
+            }
+            _boxItems.Clear();
         }
 
         private void UpdateItemEvents()
@@ -1116,6 +1322,25 @@ namespace UCHCameraMod
                 sr.sortingLayerName = "UI 1";
 
             _heldPieces[evt.PieceID] = piece;
+
+            // Remove matching item from the box so it doesn't duplicate the held piece visually.
+            var boxMetaList = LobbyManager.instance?.CurrentGameController?.MetaList;
+            if (boxMetaList != null)
+            {
+                for (int i = 0; i < _boxItems.Count; i++)
+                {
+                    var boxItem = _boxItems[i];
+                    if (boxItem == null) continue;
+                    int boxBlockIdx = boxMetaList.GetIndexForPlaceable(boxItem.placeablePrefab.Name);
+                    if (boxBlockIdx == evt.BlockIndex)
+                    {
+                        UnityEngine.Object.Destroy(boxItem.gameObject);
+                        _boxItems.RemoveAt(i);
+                        break;
+                    }
+                }
+            }
+
             Plugin.Logger.LogInfo($"[Playback:Item] t={CurrentTime:F2} pickup piece={evt.PieceID} block={evt.BlockIndex}");
         }
 
@@ -1127,12 +1352,26 @@ namespace UCHCameraMod
                 return;
             }
 
+            // Set final transform first — Place() saves these as OriginalPosition/Rotation/Scale.
             piece.transform.position = new Vector3(evt.PosX, evt.PosY, piece.transform.position.z);
             piece.transform.rotation = Quaternion.Euler(0f, 0f, evt.RotZ);
             piece.transform.localScale = new Vector3(evt.ScaleX, evt.ScaleY, piece.transform.localScale.z);
 
-            foreach (var sr in piece.GetComponentsInChildren<SpriteRenderer>())
-                sr.sortingLayerName = "Default";
+            // Call the game's Place method — marks placed=true, switches to PlacedPhase colliders,
+            // sets up attachment groups, updates sort order, hides PlacementGuides.
+            // Without this, placed stays false and pieces never activate on PLAY phase.
+            try
+            {
+                piece.Place(evt.PlayerNetNum, true, false);  // CHANGED from (1, false, true)
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogError($"[Playback:Item] Placeable.Place() failed for piece={evt.PieceID}: {ex.Message}");
+            }
+
+            // Match the game's post-place rigidbody state (from PiecePlacementCursor.WaitForPlacement).
+            var rb = piece.GetComponent<Rigidbody2D>();
+            if (rb != null) rb.isKinematic = true;
 
             piece.gameObject.layer = 9;
 

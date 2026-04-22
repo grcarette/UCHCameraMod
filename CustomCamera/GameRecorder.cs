@@ -49,6 +49,7 @@ namespace UCHCameraMod
         private GameControl.GamePhase _lastCapturedPhase = (GameControl.GamePhase)(-1);
         private PartyBox _trackedBox;
         private bool _lastBoxVisible;
+        private List<BoxItemSnapshot> _pendingBoxItems;
 
         private void Awake()
         {
@@ -65,6 +66,7 @@ namespace UCHCameraMod
                 CurrentRecording.ItemPlacedEvents.Add(new ItemPlacedEvent
                 {
                     Time = elapsed,
+                    PlayerNetNum = placedEvt.PlacedBlock.placedByPlayerNumber,
                     PieceID = placedEvt.PlacedBlock.ID,
                     PosX = placedEvt.PlacedBlock.transform.position.x,
                     PosY = placedEvt.PlacedBlock.transform.position.y,
@@ -74,6 +76,33 @@ namespace UCHCameraMod
                 });
                 Plugin.Logger.LogInfo($"[Recorder:Item] t={elapsed:F2} placed piece={placedEvt.PlacedBlock.ID} via PiecePlacedEvent");
             }
+        }
+
+        public void RecordBoxContents(PartyBox box, List<PickableBlock> pieces)
+        {
+            if (!IsRecording) return;
+
+            var metaList = LobbyManager.instance?.CurrentGameController?.MetaList;
+            if (metaList == null) return;
+
+            var items = new List<BoxItemSnapshot>(pieces.Count);
+            foreach (var piece in pieces)
+            {
+                if (piece == null || piece.placeablePrefab == null) continue;
+                int blockIdx = metaList.GetIndexForPlaceable(piece.placeablePrefab.Name);
+                var localPos = piece.transform.localPosition;
+                items.Add(new BoxItemSnapshot
+                {
+                    BlockIndex = blockIdx,
+                    LocalX = localPos.x,
+                    LocalY = localPos.y,
+                });
+            }
+
+            _pendingBoxItems = items;
+
+            Plugin.Logger.LogInfo(
+                $"[Recorder:Box] Stashed {items.Count} item position(s) from ChoosePieces");
         }
 
         public void RecordItemDestroyed(int pieceID)
@@ -414,14 +443,36 @@ namespace UCHCameraMod
                 bool currentVisible = _trackedBox.Visible;
                 if (currentVisible != _lastBoxVisible)
                 {
-                    CurrentRecording.PartyBoxEvents.Add(new PartyBoxVisibilityEvent
+                    var boxEvt = new PartyBoxVisibilityEvent
                     {
                         Time = elapsed,
                         Opened = currentVisible,
-                        IsExtraBox = false
-                    });
-                    Plugin.Logger.LogInfo(
-                        $"[Recorder:Box] t={elapsed:F2} -> {(currentVisible ? "opened" : "closed")}");
+                        IsExtraBox = false,
+                        Items = new List<BoxItemSnapshot>()
+                    };
+
+                    if (currentVisible)
+                    {
+                        if (_pendingBoxItems != null)
+                        {
+                            boxEvt.Items = _pendingBoxItems;
+                            _pendingBoxItems = null;
+                            Plugin.Logger.LogInfo(
+                                $"[Recorder:Box] t={elapsed:F2} opened with {boxEvt.Items.Count} item(s)");
+                        }
+                        else
+                        {
+                            Plugin.Logger.LogWarning(
+                                $"[Recorder:Box] t={elapsed:F2} opened but no pending items " +
+                                "(ChoosePieces didn't fire before visibility transition)");
+                        }
+                    }
+                    else
+                    {
+                        Plugin.Logger.LogInfo($"[Recorder:Box] t={elapsed:F2} closed");
+                    }
+
+                    CurrentRecording.PartyBoxEvents.Add(boxEvt);
                     _lastBoxVisible = currentVisible;
                 }
             }

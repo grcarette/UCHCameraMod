@@ -53,6 +53,32 @@ namespace UCHCameraMod
 
             new Harmony(MyPluginInfo.PLUGIN_GUID).PatchAll();
             Logger.LogInfo($"{MyPluginInfo.PLUGIN_NAME} loaded. Press F6 to toggle camera customization mode.");
+
+            // Cache PartyBox prefab from HideAndDontSave once it's loaded (typically after MainMenu)
+            UnityEngine.SceneManagement.SceneManager.sceneLoaded += (scene, mode) =>
+            {
+                if (VersusControlStartPatch.CachedPartyBoxPrefab != null) return;
+
+                var boxes = Resources.FindObjectsOfTypeAll<PartyBox>();
+                if (boxes.Length == 0) return;
+
+                PartyBox prefab = null;
+                foreach (var b in boxes)
+                {
+                    if (b == null) continue;
+                    if (string.IsNullOrEmpty(b.gameObject.scene.name))
+                    {
+                        prefab = b;
+                        break;
+                    }
+                }
+                if (prefab == null) prefab = boxes[0];
+
+                VersusControlStartPatch.CachedPartyBoxPrefab = prefab;
+                Logger.LogInfo(
+                    $"[PrefabCache] PartyBox prefab cached via FindObjectsOfTypeAll " +
+                    $"after scene '{scene.name}' (found {boxes.Length} total)");
+            };
         }
 
         private void BindConfig()

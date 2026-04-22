@@ -102,6 +102,14 @@ namespace UCHCameraMod
                 sb.AppendLine($"T={be.Time}");
                 sb.AppendLine($"O={be.Opened}");
                 sb.AppendLine($"E={be.IsExtraBox}");
+                sb.AppendLine($"ItemCount={be.Items.Count}");
+                foreach (var item in be.Items)
+                {
+                    sb.AppendLine("---BITEM");
+                    sb.AppendLine($"B={item.BlockIndex}");
+                    sb.AppendLine($"X={item.LocalX:F4}");
+                    sb.AppendLine($"Y={item.LocalY:F4}");
+                }
             }
 
             sb.AppendLine($"ItemPickupCount={rec.ItemPickupEvents.Count}");
@@ -189,6 +197,7 @@ namespace UCHCameraMod
             RecordingFrame currentFrame = null;
             bool inPhaseSection = false;
             bool inBoxSection = false;
+            bool inBoxItemBlock = false;
             bool inItemPickupBlock = false;
             bool inItemPlacedBlock = false;
             bool inItemDestroyBlock = false;
@@ -212,7 +221,21 @@ namespace UCHCameraMod
                     inItemPickupBlock = false;
                     inItemPlacedBlock = false;
                     inItemDestroyBlock = false;
+                    inBoxItemBlock = false;
                     rec.PartyBoxEvents.Add(new PartyBoxVisibilityEvent());
+                    continue;
+                }
+
+                if (line == "---BITEM")
+                {
+                    inBoxItemBlock = true;
+                    inBoxSection = false;
+                    inPhaseSection = false;
+                    inItemPickupBlock = false;
+                    inItemPlacedBlock = false;
+                    inItemDestroyBlock = false;
+                    if (rec.PartyBoxEvents.Count > 0)
+                        rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].Items.Add(new BoxItemSnapshot());
                     continue;
                 }
 
@@ -420,13 +443,53 @@ namespace UCHCameraMod
                             if (inBoxSection && rec.PartyBoxEvents.Count > 0)
                                 bool.TryParse(val, out rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].IsExtraBox);
                             break;
+                        case "ItemCount":
+                            // informational only — item list is built by ---BITEM blocks
+                            break;
+                        case "S":
+                            if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
+                            {
+                                var sc = val.Split(',');
+                                if (sc.Length == 2)
+                                {
+                                    float.TryParse(sc[0], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].ScaleX);
+                                    float.TryParse(sc[1], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].ScaleY);
+                                }
+                            }
+                            break;
                         case "C":
                             if (inItemPickupBlock && rec.ItemPickupEvents.Count > 0)
                                 int.TryParse(val, out rec.ItemPickupEvents[rec.ItemPickupEvents.Count - 1].CursorNetNum);
                             break;
                         case "B":
-                            if (inItemPickupBlock && rec.ItemPickupEvents.Count > 0)
+                            if (inBoxItemBlock && rec.PartyBoxEvents.Count > 0)
+                            {
+                                var boxItems = rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].Items;
+                                if (boxItems.Count > 0)
+                                    int.TryParse(val, out boxItems[boxItems.Count - 1].BlockIndex);
+                            }
+                            else if (inItemPickupBlock && rec.ItemPickupEvents.Count > 0)
                                 int.TryParse(val, out rec.ItemPickupEvents[rec.ItemPickupEvents.Count - 1].BlockIndex);
+                            break;
+                        case "X":
+                            if (inBoxItemBlock && rec.PartyBoxEvents.Count > 0)
+                            {
+                                var boxItems = rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].Items;
+                                if (boxItems.Count > 0)
+                                    float.TryParse(val, System.Globalization.NumberStyles.Float,
+                                        System.Globalization.CultureInfo.InvariantCulture,
+                                        out boxItems[boxItems.Count - 1].LocalX);
+                            }
+                            break;
+                        case "Y":
+                            if (inBoxItemBlock && rec.PartyBoxEvents.Count > 0)
+                            {
+                                var boxItems = rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].Items;
+                                if (boxItems.Count > 0)
+                                    float.TryParse(val, System.Globalization.NumberStyles.Float,
+                                        System.Globalization.CultureInfo.InvariantCulture,
+                                        out boxItems[boxItems.Count - 1].LocalY);
+                            }
                             break;
                         case "P":
                             if (inPhaseSection && rec.PhaseEvents.Count > 0)
@@ -452,17 +515,6 @@ namespace UCHCameraMod
                         case "R":
                             if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
                                 float.TryParse(val, out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].RotZ);
-                            break;
-                        case "S":
-                            if (inItemPlacedBlock && rec.ItemPlacedEvents.Count > 0)
-                            {
-                                var sc = val.Split(',');
-                                if (sc.Length == 2)
-                                {
-                                    float.TryParse(sc[0], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].ScaleX);
-                                    float.TryParse(sc[1], out rec.ItemPlacedEvents[rec.ItemPlacedEvents.Count - 1].ScaleY);
-                                }
-                            }
                             break;
                         case "PartyBoxEventCount":
                         case "ItemPickupCount":

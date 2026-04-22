@@ -92,6 +92,7 @@ namespace UCHCameraMod
     public class ItemPlacedEvent
     {
         public float Time;
+        public int PlayerNetNum;
         public int PieceID;
         public float PosX, PosY, RotZ, ScaleX, ScaleY;
     }
@@ -146,11 +147,20 @@ namespace UCHCameraMod
     }
 
     [Serializable]
+    public class BoxItemSnapshot
+    {
+        public int BlockIndex;
+        public float LocalX;
+        public float LocalY;
+    }
+
+    [Serializable]
     public class PartyBoxVisibilityEvent
     {
         public float Time;
         public bool Opened;
         public bool IsExtraBox;
+        public List<BoxItemSnapshot> Items = new List<BoxItemSnapshot>();
     }
 
     [Serializable]
