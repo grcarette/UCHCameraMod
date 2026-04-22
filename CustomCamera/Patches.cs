@@ -305,29 +305,6 @@ namespace UCHCameraMod
         }
     }
 
-    [HarmonyPatch(typeof(PartyPickCursor), "Update")]
-    internal static class DiagPartyPickCursorUpdatePatch
-    {
-        private static float _lastLog;
-
-        [HarmonyPostfix]
-        public static void Postfix(PartyPickCursor __instance)
-        {
-            if (GamePlaybackController.Instance == null ||
-                !GamePlaybackController.Instance.IsPlaying) return;
-            if (!__instance.hasAuthority) return;
-
-            if (Time.time - _lastLog >= 1f)
-            {
-                _lastLog = Time.time;
-                Plugin.Logger.LogInfo(
-                    $"[Diag:Cursor] PartyPickCursor.Update running on host cursor during replay, " +
-                    $"netNum={__instance.networkNumber}, " +
-                    $"enabled={__instance.Enabled}");
-            }
-        }
-    }
-
     [HarmonyPatch(typeof(PiecePlacementCursor), "ReceiveEvent")]
     internal static class DiagCursorReceiveEventPatch
     {
