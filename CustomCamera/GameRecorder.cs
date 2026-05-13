@@ -50,6 +50,11 @@ namespace UCHCameraMod
         private PartyBox _trackedBox;
         private bool _lastBoxVisible;
         private List<BoxItemSnapshot> _pendingBoxItems;
+        private PartyBoxVisibilityEvent _currentOpenBoxEvent;
+
+        private static readonly System.Reflection.FieldInfo _partyBoxPiecesField =
+            typeof(PartyBox).GetField("pieces",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
         private void Awake()
         {
@@ -76,6 +81,71 @@ namespace UCHCameraMod
                 });
                 Plugin.Logger.LogInfo($"[Recorder:Item] t={elapsed:F2} placed piece={placedEvt.PlacedBlock.ID} via PiecePlacedEvent");
             }
+        }
+
+        public void RecordBoxShown(bool isExtraBox)
+        {
+            if (!IsRecording || CurrentRecording == null) return;
+
+            float elapsed = Time.realtimeSinceStartup - _startTime;
+            var boxEvt = new PartyBoxVisibilityEvent
+            {
+                Time = elapsed,
+                FlapsOpenTime = -1f,
+                Opened = true,
+                IsExtraBox = isExtraBox,
+                Items = new List<BoxItemSnapshot>()
+            };
+
+            if (_pendingBoxItems != null)
+            {
+                boxEvt.Items = _pendingBoxItems;
+                _pendingBoxItems = null;
+                Plugin.Logger.LogInfo(
+                    $"[Recorder:Box] t={elapsed:F2} ShowBox with {boxEvt.Items.Count} item(s)");
+            }
+            else
+            {
+                Plugin.Logger.LogWarning(
+                    $"[Recorder:Box] t={elapsed:F2} ShowBox but no pending items " +
+                    "(ChoosePieces didn't fire before ShowBox)");
+            }
+
+            CurrentRecording.PartyBoxEvents.Add(boxEvt);
+            _currentOpenBoxEvent = boxEvt;
+            _lastBoxVisible = true;
+        }
+
+        public void RecordBoxFlapsOpened()
+        {
+            if (!IsRecording || _currentOpenBoxEvent == null) return;
+
+            float elapsed = Time.realtimeSinceStartup - _startTime;
+            _currentOpenBoxEvent.FlapsOpenTime = elapsed;
+            Plugin.Logger.LogInfo($"[Recorder:Box] t={elapsed:F2} openFlaps fired");
+            _currentOpenBoxEvent = null;
+        }
+
+        private List<BoxItemSnapshot> CaptureCurrentBoxItems(PartyBox box)
+        {
+            var metaList = LobbyManager.instance?.CurrentGameController?.MetaList;
+            var pieces = _partyBoxPiecesField?.GetValue(box) as List<PickableBlock>;
+            if (pieces == null || metaList == null) return new List<BoxItemSnapshot>();
+
+            var items = new List<BoxItemSnapshot>(pieces.Count);
+            foreach (var piece in pieces)
+            {
+                if (piece == null || piece.placeablePrefab == null) continue;
+                int blockIdx = metaList.GetIndexForPlaceable(piece.placeablePrefab.Name);
+                var localPos = piece.transform.localPosition;
+                items.Add(new BoxItemSnapshot
+                {
+                    BlockIndex = blockIdx,
+                    LocalX = localPos.x,
+                    LocalY = localPos.y,
+                });
+            }
+            return items;
         }
 
         public void RecordBoxContents(PartyBox box, List<PickableBlock> pieces)
@@ -196,7 +266,29 @@ namespace UCHCameraMod
             {
                 _trackedBox = vc.PartyBox;
                 _lastBoxVisible = _trackedBox.Visible;
-                Plugin.Logger.LogInfo($"[Recorder] Tracking PartyBox (initialVisible={_lastBoxVisible})");
+                Plugin.Logger.LogInfo(
+                    $"[Recorder] Tracking PartyBox (initialVisible={_lastBoxVisible}, " +
+                    $"hash={_trackedBox.GetHashCode()})");
+
+                // Bootstrap: if the box is already open when recording starts, synthesize an
+                // open event at t=0. ShowBox() already ran before IsRecording was true, so the
+                // Harmony postfix missed it. Without this, the recording has only a close event
+                // and the replay box never appears.
+                if (_lastBoxVisible)
+                {
+                    var bootstrapEvt = new PartyBoxVisibilityEvent
+                    {
+                        Time = 0f,
+                        FlapsOpenTime = 0f, // flaps are already open — no gating needed
+                        Opened = true,
+                        IsExtraBox = false,
+                        Items = CaptureCurrentBoxItems(_trackedBox)
+                    };
+                    CurrentRecording.PartyBoxEvents.Add(bootstrapEvt);
+                    Plugin.Logger.LogInfo(
+                        $"[Recorder:Box] Bootstrap open event at t=0 with {bootstrapEvt.Items.Count} item(s)");
+                    // _currentOpenBoxEvent intentionally left null — no openFlaps coming for this one
+                }
             }
 
             _trackedCursors.Clear();
@@ -286,10 +378,65 @@ namespace UCHCameraMod
             CurrentRecording.SoundEvents.Add(new SoundEvent
             {
                 Time = Time.realtimeSinceStartup - _startTime,
-                NetworkNumber = networkNumber,
                 EventName = eventName,
+                SourceKind = SoundSourceKind.Character,
+                SourceID = networkNumber,
                 IsZombie = isZombie,
-                IsGhost = isGhost
+                IsGhost = isGhost,
+            });
+        }
+
+        public void RecordPostEvent(string eventName, GameObject sourceGO)
+        {
+            if (!IsRecording || CurrentRecording == null) return;
+            if (string.IsNullOrEmpty(eventName)) return;
+
+            SoundSourceKind kind;
+            int sourceID;
+
+            if (sourceGO == null)
+                return; // global/world sound — too noisy to capture blindly
+
+            // Character: let the audioEvent/AudioEventExact patches handle it to avoid duplication
+            var character = sourceGO.GetComponentInParent<Character>();
+            if (character != null && character.networkNumber > 0)
+                return;
+
+            var cursor = sourceGO.GetComponentInParent<Cursor>();
+            if (cursor != null && cursor.networkNumber > 0)
+            {
+                kind = SoundSourceKind.Cursor;
+                sourceID = cursor.networkNumber;
+            }
+            else
+            {
+                var placeable = sourceGO.GetComponentInParent<Placeable>();
+                if (placeable != null && placeable.ID != 0)
+                {
+                    kind = SoundSourceKind.Piece;
+                    sourceID = placeable.ID;
+                }
+                else
+                {
+                    var box = sourceGO.GetComponent<PartyBox>();
+                    if (box != null)
+                    {
+                        kind = SoundSourceKind.PartyBox;
+                        sourceID = -1;
+                    }
+                    else
+                    {
+                        return; // unrecognized source — skip to avoid ambient/music/UI sounds
+                    }
+                }
+            }
+
+            CurrentRecording.SoundEvents.Add(new SoundEvent
+            {
+                Time = Time.realtimeSinceStartup - _startTime,
+                EventName = eventName,
+                SourceKind = kind,
+                SourceID = sourceID,
             });
         }
 
@@ -438,42 +585,21 @@ namespace UCHCameraMod
                 _lastCapturedPhase = _gameControl.Phase;
             }
 
+            // Close-side: poll for visibility going false (open side is event-driven via patches).
             if (_trackedBox != null)
             {
                 bool currentVisible = _trackedBox.Visible;
-                if (currentVisible != _lastBoxVisible)
+                if (!currentVisible && _lastBoxVisible)
                 {
-                    var boxEvt = new PartyBoxVisibilityEvent
+                    _currentOpenBoxEvent = null;
+                    CurrentRecording.PartyBoxEvents.Add(new PartyBoxVisibilityEvent
                     {
                         Time = elapsed,
-                        Opened = currentVisible,
+                        Opened = false,
                         IsExtraBox = false,
-                        Items = new List<BoxItemSnapshot>()
-                    };
-
-                    if (currentVisible)
-                    {
-                        if (_pendingBoxItems != null)
-                        {
-                            boxEvt.Items = _pendingBoxItems;
-                            _pendingBoxItems = null;
-                            Plugin.Logger.LogInfo(
-                                $"[Recorder:Box] t={elapsed:F2} opened with {boxEvt.Items.Count} item(s)");
-                        }
-                        else
-                        {
-                            Plugin.Logger.LogWarning(
-                                $"[Recorder:Box] t={elapsed:F2} opened but no pending items " +
-                                "(ChoosePieces didn't fire before visibility transition)");
-                        }
-                    }
-                    else
-                    {
-                        Plugin.Logger.LogInfo($"[Recorder:Box] t={elapsed:F2} closed");
-                    }
-
-                    CurrentRecording.PartyBoxEvents.Add(boxEvt);
-                    _lastBoxVisible = currentVisible;
+                    });
+                    Plugin.Logger.LogInfo($"[Recorder:Box] t={elapsed:F2} closed");
+                    _lastBoxVisible = false;
                 }
             }
 

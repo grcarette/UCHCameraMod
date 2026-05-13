@@ -185,6 +185,20 @@ namespace UCHCameraMod
         }
     }
 
+    [HarmonyPatch(typeof(AkSoundEngine), "PostEvent", new Type[] { typeof(string), typeof(GameObject) })]
+    internal static class PatchAkSoundEnginePostEvent
+    {
+        [HarmonyPostfix]
+        public static void Postfix(string in_pszEventName, GameObject in_gameObjectID)
+        {
+            if (PlaybackState.ShouldBlock()) return;
+            var recorder = GameRecorder.Instance;
+            if (recorder == null || !recorder.IsRecording) return;
+            if (string.IsNullOrEmpty(in_pszEventName)) return;
+            recorder.RecordPostEvent(in_pszEventName, in_gameObjectID);
+        }
+    }
+
     [HarmonyPatch(typeof(ScoreLine), "AddScorePointBlock")]
     internal static class PatchScoreLineTrackPoints
     {
@@ -208,6 +222,51 @@ namespace UCHCameraMod
             if (GameRecorder.Instance == null || !GameRecorder.Instance.IsRecording) return;
             if (__instance == null || __instance.ID == 0) return;
             GameRecorder.Instance.RecordItemDestroyed(__instance.ID);
+        }
+    }
+
+    // Hooks ShowBox into the recorder. Diagnostic log retained — useful if box
+    // capture ever regresses, and the call is cheap.
+    [HarmonyPatch(typeof(PartyBox), "ShowBox")]
+    internal static class PartyBoxShowBoxPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(PartyBox __instance, bool extraBox)
+        {
+            Plugin.Logger.LogInfo(
+                $"[Diag:Box] ShowBox(extraBox={extraBox}) called. " +
+                $"Visible={__instance.Visible} " +
+                $"hash={__instance.GetHashCode()} " +
+                $"recording={GameRecorder.Instance?.IsRecording == true}");
+
+            GameRecorder.Instance?.RecordBoxShown(extraBox);
+        }
+    }
+
+    // Hooks openFlaps into the recorder. This is the animation event that
+    // marks "cursors can now interact" — capturing its time lets the replay
+    // gate cursor input correctly.
+    [HarmonyPatch(typeof(PartyBox), "openFlaps")]
+    internal static class PartyBoxOpenFlapsPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(PartyBox __instance)
+        {
+            Plugin.Logger.LogInfo(
+                $"[Diag:Box] openFlaps fired. Visible={__instance.Visible}");
+
+            GameRecorder.Instance?.RecordBoxFlapsOpened();
+        }
+    }
+
+    [HarmonyPatch(typeof(PartyBox), "closeFlaps")]
+    internal static class DiagPartyBoxCloseFlapsPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(PartyBox __instance)
+        {
+            Plugin.Logger.LogInfo(
+                $"[Diag:Box] closeFlaps fired. Visible={__instance.Visible}");
         }
     }
 
@@ -242,7 +301,34 @@ namespace UCHCameraMod
                 CachedPartyBoxPrefab = __instance.PartyBoxPrefab;
                 Plugin.Logger.LogInfo(
                     $"[PrefabCache] PartyBoxPrefab cached: {CachedPartyBoxPrefab.name}");
+
+                // Diagnostic E: component null-check on the cached prefab
+                var prefab = CachedPartyBoxPrefab;
+                Plugin.Logger.LogInfo(
+                    $"[PrefabCache] PartyBox prefab component check: " +
+                    $"boxAnimator={prefab.boxAnimator != null} " +
+                    $"boxTopL={prefab.boxTopL != null} " +
+                    $"BoxTopR={prefab.BoxTopR != null} " +
+                    $"boxFlapL={prefab.boxFlapL != null} " +
+                    $"boxFlapR={prefab.boxFlapR != null} " +
+                    $"regularPartyL={prefab.regularPartyL != null} " +
+                    $"regularPartyR={prefab.regularPartyR != null}");
             }
+        }
+    }
+
+    // Diagnostic C: log every Hide() call on PartyBox during playback
+    [HarmonyPatch(typeof(PartyBox), "Hide")]
+    internal static class DiagPartyBoxHideRecorderPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(PartyBox __instance, bool fadeOut)
+        {
+            Plugin.Logger.LogInfo(
+                $"[Diag:Box] Hide(fadeOut={fadeOut}) called. " +
+                $"Visible={__instance.Visible} " +
+                $"recording={GameRecorder.Instance?.IsRecording == true}\n" +
+                new System.Diagnostics.StackTrace(1, false).ToString());
         }
     }
 
@@ -313,7 +399,6 @@ namespace UCHCameraMod
         {
             if (GamePlaybackController.Instance == null ||
                 !GamePlaybackController.Instance.IsPlaying) return;
-            if (!__instance.hasAuthority) return;
 
             Plugin.Logger.LogInfo(
                 $"[Diag:Cursor] ReceiveEvent during replay, " +

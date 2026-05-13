@@ -57,6 +57,7 @@ namespace UCHCameraMod
         private int _nextPickupEventIdx;
         private int _nextPlacedEventIdx;
         private int _nextDestroyedEventIdx;
+        private PartyBoxVisibilityEvent _activeOpenBoxEvent;
 
         private static readonly System.Reflection.FieldInfo _zoomCameraPhaseField =
             typeof(ZoomCamera).GetField("currentPhase",
@@ -76,6 +77,7 @@ namespace UCHCameraMod
             _nextPhaseEventIdx = 0;
             _nextBoxEventIdx = 0;
             _boxCurrentlyShown = false;
+            _activeOpenBoxEvent = null;
             _nextPickupEventIdx = 0;
             _nextPlacedEventIdx = 0;
             _nextDestroyedEventIdx = 0;
@@ -645,7 +647,10 @@ namespace UCHCameraMod
             _replayPartyBox.transform.parent = gc.UICamera.transform;
             _replayPartyBox.UICamera = gc.UICamera.GetComponent<Camera>();
 
-            _replayPartyBox.ChangeListener(false);
+            // Defer detach: PartyBox.Start() runs next frame and re-subscribes
+            // via ChangeListener(true). Detaching now would be a no-op.
+            StartCoroutine(DeferredDetachListeners(_replayPartyBox));
+
             _replayPartyBox.SetPlayerCount(_cursorMap.Count);
             _replayPartyBox.HasAuthority = true;
 
@@ -670,8 +675,46 @@ namespace UCHCameraMod
             _replayPartyBox.Hide(false);
             _boxCurrentlyShown = false;
 
+            // Diagnostic D: baseline state before playback begins
+            {
+                var pb = _replayPartyBox;
+                var go = pb.gameObject;
+                var t = pb.transform;
+                var cam = pb.UICamera;
+                Plugin.Logger.LogInfo(
+                    $"[Diag:Box] SpawnReplayPartyBox end state:\n" +
+                    $"  GO: name={go.name} layer={go.layer} " +
+                    $"activeSelf={go.activeSelf} activeInHierarchy={go.activeInHierarchy}\n" +
+                    $"  Transform: parent={(t.parent != null ? t.parent.name : "<none>")} " +
+                    $"worldPos={t.position} localPos={t.localPosition} localScale={t.localScale}\n" +
+                    $"  Visible(prop)={pb.Visible}\n" +
+                    $"  Animator: enabled={pb.boxAnimator.enabled} " +
+                    $"BoxOpen={pb.boxAnimator.GetBool("BoxOpen")} " +
+                    $"stateHash={pb.boxAnimator.GetCurrentAnimatorStateInfo(0).fullPathHash} " +
+                    $"normTime={pb.boxAnimator.GetCurrentAnimatorStateInfo(0).normalizedTime:F2}\n" +
+                    $"  TopL: enabled={pb.boxTopL.enabled} sprite={pb.boxTopL.sprite?.name ?? "<null>"} " +
+                    $"color={pb.boxTopL.color} sortLayer={pb.boxTopL.sortingLayerName} sortOrder={pb.boxTopL.sortingOrder}\n" +
+                    $"  TopR: enabled={pb.BoxTopR.enabled} sprite={pb.BoxTopR.sprite?.name ?? "<null>"} " +
+                    $"sortLayer={pb.BoxTopR.sortingLayerName} sortOrder={pb.BoxTopR.sortingOrder}\n" +
+                    $"  UICamera: null={cam == null} " +
+                    (cam != null ? $"enabled={cam.enabled} cullingMask=0x{cam.cullingMask:X8} " +
+                                   $"layerInMask={(cam.cullingMask & (1 << go.layer)) != 0} " +
+                                   $"ortho={cam.orthographic} orthoSize={cam.orthographicSize} " +
+                                   $"worldPos={cam.transform.position}" : ""));
+            }
+
             Plugin.Logger.LogInfo(
                 $"[ReplayLaunch:PartyBox] Spawned box + {_cursorMap.Count} pick cursor(s)");
+        }
+
+        private System.Collections.IEnumerator DeferredDetachListeners(PartyBox pb)
+        {
+            yield return null;  // wait one frame so PartyBox.Start() has fired
+            if (pb != null)
+            {
+                pb.ChangeListener(false);
+                Plugin.Logger.LogInfo("[ReplayLaunch:PartyBox] Detached event listeners after Start()");
+            }
         }
 
         private GamePlayer FindGamePlayer(int networkNumber)
@@ -799,6 +842,7 @@ namespace UCHCameraMod
             _nextPhaseEventIdx = 0;
             _nextBoxEventIdx = 0;
             _boxCurrentlyShown = false;
+            _activeOpenBoxEvent = null;
             _nextPickupEventIdx = 0;
             _nextPlacedEventIdx = 0;
             _nextDestroyedEventIdx = 0;
@@ -971,12 +1015,15 @@ namespace UCHCameraMod
             DestroyBoxItems();
             _nextBoxEventIdx = 0;
             _boxCurrentlyShown = false;
+            _activeOpenBoxEvent = null;
             if (_recording?.PartyBoxEvents != null)
             {
                 for (int i = 0; i < _recording.PartyBoxEvents.Count; i++)
                 {
                     if (_recording.PartyBoxEvents[i].Time > CurrentTime) break;
-                    _boxCurrentlyShown = _recording.PartyBoxEvents[i].Opened;
+                    var boxEvt = _recording.PartyBoxEvents[i];
+                    _boxCurrentlyShown = boxEvt.Opened;
+                    _activeOpenBoxEvent = boxEvt.Opened ? boxEvt : null;
                     _nextBoxEventIdx = i + 1;
                 }
             }
@@ -1146,19 +1193,65 @@ namespace UCHCameraMod
                 {
                     _replayPartyBox.ShowBox(evt.IsExtraBox);
                     _boxCurrentlyShown = true;
+                    _activeOpenBoxEvent = evt;
                     SpawnBoxItems(evt.Items);
-                    Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> opened with {evt.Items.Count} item(s)");
+                    Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> opened with {evt.Items.Count} item(s)" +
+                        (evt.FlapsOpenTime > 0f ? $", cursors gated until t={evt.FlapsOpenTime:F2}" : ""));
+
+                    // Diagnostic A: comprehensive state dump right after ShowBox
+                    {
+                        var pb = _replayPartyBox;
+                        var go = pb.gameObject;
+                        var t = pb.transform;
+                        var cam = pb.UICamera;
+                        Plugin.Logger.LogInfo(
+                            $"[Diag:Box] Post-ShowBox state:\n" +
+                            $"  GO: name={go.name} layer={go.layer} " +
+                            $"activeSelf={go.activeSelf} activeInHierarchy={go.activeInHierarchy}\n" +
+                            $"  Transform: parent={(t.parent != null ? t.parent.name : "<none>")} " +
+                            $"worldPos={t.position} localPos={t.localPosition} localScale={t.localScale}\n" +
+                            $"  Visible(prop)={pb.Visible}\n" +
+                            $"  Animator: enabled={pb.boxAnimator.enabled} " +
+                            $"BoxOpen={pb.boxAnimator.GetBool("BoxOpen")} " +
+                            $"stateHash={pb.boxAnimator.GetCurrentAnimatorStateInfo(0).fullPathHash} " +
+                            $"normTime={pb.boxAnimator.GetCurrentAnimatorStateInfo(0).normalizedTime:F2}\n" +
+                            $"  TopL: enabled={pb.boxTopL.enabled} sprite={pb.boxTopL.sprite?.name ?? "<null>"} " +
+                            $"color={pb.boxTopL.color} sortLayer={pb.boxTopL.sortingLayerName} sortOrder={pb.boxTopL.sortingOrder}\n" +
+                            $"  TopR: enabled={pb.BoxTopR.enabled} sprite={pb.BoxTopR.sprite?.name ?? "<null>"} " +
+                            $"sortLayer={pb.BoxTopR.sortingLayerName} sortOrder={pb.BoxTopR.sortingOrder}\n" +
+                            $"  UICamera: null={cam == null} " +
+                            (cam != null ? $"enabled={cam.enabled} cullingMask=0x{cam.cullingMask:X8} " +
+                                           $"layerInMask={(cam.cullingMask & (1 << go.layer)) != 0} " +
+                                           $"ortho={cam.orthographic} orthoSize={cam.orthographicSize} " +
+                                           $"worldPos={cam.transform.position}" : ""));
+                    }
+
+                    // Diagnostic B: deferred state dumps
+                    _replayGameControl.StartCoroutine(DiagBoxStateAfter(_replayPartyBox, 0.05f, "+1 frame"));
+                    _replayGameControl.StartCoroutine(DiagBoxStateAfter(_replayPartyBox, 1.0f, "+1s"));
                 }
                 else
                 {
                     _replayPartyBox.Hide(false);
                     _boxCurrentlyShown = false;
+                    _activeOpenBoxEvent = null;
                     DestroyBoxItems();
                     Plugin.Logger.LogInfo($"[Playback:Box] t={CurrentTime:F2} -> closed");
                 }
 
                 _nextBoxEventIdx++;
             }
+        }
+
+        private System.Collections.IEnumerator DiagBoxStateAfter(PartyBox pb, float delay, string label)
+        {
+            yield return new WaitForSecondsRealtime(delay);
+            if (pb == null) { Plugin.Logger.LogInfo($"[Diag:Box {label}] box destroyed"); yield break; }
+            Plugin.Logger.LogInfo(
+                $"[Diag:Box {label}] active={pb.gameObject.activeInHierarchy} " +
+                $"Visible={pb.Visible} BoxOpen={pb.boxAnimator.GetBool("BoxOpen")} " +
+                $"animNormTime={pb.boxAnimator.GetCurrentAnimatorStateInfo(0).normalizedTime:F2} " +
+                $"topL.enabled={pb.boxTopL.enabled} topL.color={pb.boxTopL.color}");
         }
 
         private void SpawnBoxItems(List<BoxItemSnapshot> items)
@@ -1186,6 +1279,14 @@ namespace UCHCameraMod
 
             try
             {
+                var staleList = _partyBoxPiecesField?.GetValue(_replayPartyBox) as List<PickableBlock>;
+                if (staleList != null)
+                {
+                    int stale = staleList.Count;
+                    staleList.Clear();
+                    if (stale > 0)
+                        Plugin.Logger.LogInfo($"[Playback:Box] Cleared {stale} stale piece reference(s) before ChoosePieces");
+                }
                 _replayPartyBox.ChoosePieces(forceBlocks.Count, forceBlocks);
                 Plugin.Logger.LogInfo($"[Playback:Box] Populated box with {forceBlocks.Count} item(s) via ChoosePieces");
             }
@@ -1334,6 +1435,8 @@ namespace UCHCameraMod
                     int boxBlockIdx = boxMetaList.GetIndexForPlaceable(boxItem.placeablePrefab.Name);
                     if (boxBlockIdx == evt.BlockIndex)
                     {
+                        if (SmokePool.Instance != null)
+                            SmokePool.Instance.SpawnSmoke(SmokePool.SmokeType.POOF, boxItem.transform.position, 0.7f);
                         UnityEngine.Object.Destroy(boxItem.gameObject);
                         _boxItems.RemoveAt(i);
                         break;
@@ -1374,6 +1477,11 @@ namespace UCHCameraMod
             if (rb != null) rb.isKinematic = true;
 
             piece.gameObject.layer = 9;
+
+            // Spawn placement smoke at the piece's final position.
+            // PiecePlacementCursor.Hide() does this in the real game but cursors are disabled during replay.
+            if (SmokePool.Instance != null)
+                SmokePool.Instance.SpawnSmoke(SmokePool.SmokeType.POOF, piece.transform.position, 0.7f);
 
             _heldPieces.Remove(evt.PieceID);
             _placedPieces[evt.PieceID] = piece;
@@ -1438,6 +1546,37 @@ namespace UCHCameraMod
             }
         }
 
+        private GameObject ResolveSoundSource(SoundEvent evt)
+        {
+            switch (evt.SourceKind)
+            {
+                case SoundSourceKind.Character:
+                    if (_characterMap.TryGetValue(evt.SourceID, out var ch) && ch != null)
+                        return ch.gameObject;
+                    return null;
+
+                case SoundSourceKind.Cursor:
+                    if (_cursorMap.TryGetValue(evt.SourceID, out var pc) && pc != null)
+                        return pc.gameObject;
+                    if (_pickCursorMap.TryGetValue(evt.SourceID, out var ppc) && ppc != null)
+                        return ppc.gameObject;
+                    return null;
+
+                case SoundSourceKind.Piece:
+                    if (_heldPieces.TryGetValue(evt.SourceID, out var held) && held != null)
+                        return held.gameObject;
+                    if (_placedPieces.TryGetValue(evt.SourceID, out var placed) && placed != null)
+                        return placed.gameObject;
+                    return null;
+
+                case SoundSourceKind.PartyBox:
+                    return _replayPartyBox != null ? _replayPartyBox.gameObject : null;
+
+                default:
+                    return null;
+            }
+        }
+
         private void ProcessSoundEvents()
         {
             if (_recording == null || _recording.SoundEvents == null || !SoundEnabled) return;
@@ -1447,28 +1586,36 @@ namespace UCHCameraMod
                 var snd = _recording.SoundEvents[_nextSoundIndex];
                 if (snd.Time > CurrentTime) break;
 
-                if (_characterMap.TryGetValue(snd.NetworkNumber, out Character c) && c != null)
+                if (snd.SourceKind == SoundSourceKind.Character)
                 {
-                    if (snd.EventName.StartsWith("EXACT:"))
+                    if (_characterMap.TryGetValue(snd.SourceID, out Character c) && c != null)
                     {
-                        AkSoundEngine.PostEvent(snd.EventName.Substring(6), c.gameObject);
-                    }
-                    else
-                    {
-                        string sfxName = c.CharacterSFXName;
-                        if (!string.IsNullOrEmpty(sfxName))
+                        if (snd.EventName.StartsWith("EXACT:"))
                         {
-                            string fullEvent;
-                            if (snd.IsZombie)
-                                fullEvent = "SFX_" + sfxName + "_Zombie" + snd.EventName;
-                            else if (snd.IsGhost)
-                                fullEvent = "SFX_" + sfxName + "_Ghost" + snd.EventName;
-                            else
-                                fullEvent = "SFX_" + sfxName + snd.EventName;
+                            AkSoundEngine.PostEvent(snd.EventName.Substring(6), c.gameObject);
+                        }
+                        else
+                        {
+                            string sfxName = c.CharacterSFXName;
+                            if (!string.IsNullOrEmpty(sfxName))
+                            {
+                                string fullEvent;
+                                if (snd.IsZombie)
+                                    fullEvent = "SFX_" + sfxName + "_Zombie" + snd.EventName;
+                                else if (snd.IsGhost)
+                                    fullEvent = "SFX_" + sfxName + "_Ghost" + snd.EventName;
+                                else
+                                    fullEvent = "SFX_" + sfxName + snd.EventName;
 
-                            AkSoundEngine.PostEvent(fullEvent, c.gameObject);
+                                AkSoundEngine.PostEvent(fullEvent, c.gameObject);
+                            }
                         }
                     }
+                }
+                else
+                {
+                    GameObject target = ResolveSoundSource(snd) ?? gameObject;
+                    AkSoundEngine.PostEvent(snd.EventName, target);
                 }
 
                 _nextSoundIndex++;
@@ -1547,9 +1694,17 @@ namespace UCHCameraMod
             }
         }
 
+        private bool PickCursorsGated()
+        {
+            if (_activeOpenBoxEvent == null) return false;
+            float flaps = _activeOpenBoxEvent.FlapsOpenTime;
+            return flaps > 0f && CurrentTime < flaps;
+        }
+
         private void ApplyPickCursorSnapshots(RecordingFrame frame)
         {
             if (frame.PickCursors == null) return;
+            if (PickCursorsGated()) return;
 
             for (int i = 0; i < frame.PickCursors.Count; i++)
             {

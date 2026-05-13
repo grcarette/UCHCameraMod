@@ -129,14 +129,24 @@ namespace UCHCameraMod
         public bool Visible;
     }
 
+    public enum SoundSourceKind : byte
+    {
+        World     = 0,
+        Character = 1,
+        Cursor    = 2,
+        Piece     = 3,
+        PartyBox  = 4,
+    }
+
     [Serializable]
-    public struct SoundEvent
+    public class SoundEvent
     {
         public float Time;
-        public int NetworkNumber;
         public string EventName;
-        public bool IsZombie;
-        public bool IsGhost;
+        public SoundSourceKind SourceKind;
+        public int SourceID;   // networkNumber for Character/Cursor, Placeable.ID for Piece, -1 for PartyBox/World
+        public bool IsZombie;  // only meaningful for Character
+        public bool IsGhost;   // only meaningful for Character
     }
 
     [Serializable]
@@ -158,6 +168,7 @@ namespace UCHCameraMod
     public class PartyBoxVisibilityEvent
     {
         public float Time;
+        public float FlapsOpenTime = -1f; // when openFlaps() fired; -1 = unknown/not yet fired
         public bool Opened;
         public bool IsExtraBox;
         public List<BoxItemSnapshot> Items = new List<BoxItemSnapshot>();

@@ -78,7 +78,8 @@ namespace UCHCameraMod
             {
                 sb.AppendLine("---SND");
                 sb.AppendLine($"ST={snd.Time}");
-                sb.AppendLine($"SN={snd.NetworkNumber}");
+                sb.AppendLine($"SK={(byte)snd.SourceKind}");
+                sb.AppendLine($"SN={snd.SourceID}");
                 sb.AppendLine($"SE={snd.EventName}");
                 sb.AppendLine($"SZ={snd.IsZombie}");
                 sb.AppendLine($"SG={snd.IsGhost}");
@@ -100,6 +101,7 @@ namespace UCHCameraMod
             {
                 sb.AppendLine("---BOX");
                 sb.AppendLine($"T={be.Time}");
+                sb.AppendLine($"F={be.FlapsOpenTime}");
                 sb.AppendLine($"O={be.Opened}");
                 sb.AppendLine($"E={be.IsExtraBox}");
                 sb.AppendLine($"ItemCount={be.Items.Count}");
@@ -333,7 +335,8 @@ namespace UCHCameraMod
 
                 if (line == "---SND")
                 {
-                    rec.SoundEvents.Add(new SoundEvent());
+                    // Default SourceKind=Character so old recordings (no SK field) round-trip correctly
+                    rec.SoundEvents.Add(new SoundEvent { SourceKind = SoundSourceKind.Character });
                     continue;
                 }
 
@@ -443,6 +446,12 @@ namespace UCHCameraMod
                             if (inBoxSection && rec.PartyBoxEvents.Count > 0)
                                 bool.TryParse(val, out rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].IsExtraBox);
                             break;
+                        case "F":
+                            if (inBoxSection && rec.PartyBoxEvents.Count > 0)
+                                float.TryParse(val, System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    out rec.PartyBoxEvents[rec.PartyBoxEvents.Count - 1].FlapsOpenTime);
+                            break;
                         case "ItemCount":
                             // informational only — item list is built by ---BITEM blocks
                             break;
@@ -524,46 +533,44 @@ namespace UCHCameraMod
                         case "ST":
                             if (rec.SoundEvents.Count > 0)
                             {
-                                int si = rec.SoundEvents.Count - 1;
-                                var snd = rec.SoundEvents[si];
+                                var snd = rec.SoundEvents[rec.SoundEvents.Count - 1];
                                 float.TryParse(val, out snd.Time);
-                                rec.SoundEvents[si] = snd;
+                            }
+                            break;
+                        case "SK":
+                            if (rec.SoundEvents.Count > 0)
+                            {
+                                var snd = rec.SoundEvents[rec.SoundEvents.Count - 1];
+                                if (byte.TryParse(val, out byte kindByte))
+                                    snd.SourceKind = (SoundSourceKind)kindByte;
                             }
                             break;
                         case "SN":
                             if (rec.SoundEvents.Count > 0)
                             {
-                                int si = rec.SoundEvents.Count - 1;
-                                var snd = rec.SoundEvents[si];
-                                int.TryParse(val, out snd.NetworkNumber);
-                                rec.SoundEvents[si] = snd;
+                                var snd = rec.SoundEvents[rec.SoundEvents.Count - 1];
+                                int.TryParse(val, out snd.SourceID);
                             }
                             break;
                         case "SE":
                             if (rec.SoundEvents.Count > 0)
                             {
-                                int si = rec.SoundEvents.Count - 1;
-                                var snd = rec.SoundEvents[si];
+                                var snd = rec.SoundEvents[rec.SoundEvents.Count - 1];
                                 snd.EventName = val;
-                                rec.SoundEvents[si] = snd;
                             }
                             break;
                         case "SZ":
                             if (rec.SoundEvents.Count > 0)
                             {
-                                int si = rec.SoundEvents.Count - 1;
-                                var snd = rec.SoundEvents[si];
+                                var snd = rec.SoundEvents[rec.SoundEvents.Count - 1];
                                 bool.TryParse(val, out snd.IsZombie);
-                                rec.SoundEvents[si] = snd;
                             }
                             break;
                         case "SG":
                             if (rec.SoundEvents.Count > 0)
                             {
-                                int si = rec.SoundEvents.Count - 1;
-                                var snd = rec.SoundEvents[si];
+                                var snd = rec.SoundEvents[rec.SoundEvents.Count - 1];
                                 bool.TryParse(val, out snd.IsGhost);
-                                rec.SoundEvents[si] = snd;
                             }
                             break;
                         case "PID":
